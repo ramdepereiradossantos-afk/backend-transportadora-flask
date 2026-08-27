@@ -3,7 +3,6 @@ from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
 from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
 from werkzeug.utils import secure_filename
 import os
 from reportlab.lib.pagesizes import A4
@@ -17,6 +16,8 @@ from flask_jwt_extended import (
     jwt_required,
     get_jwt_identity
 )
+from utils.datas import formatar_data_brasilia
+from utils.valores import converter_valor_brasileiro
 
 app = Flask(__name__)
 
@@ -73,37 +74,6 @@ app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///" + db_path
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
 db = SQLAlchemy(app)
-
-def converter_valor_brasileiro(valor):
-    if not valor:
-        return 0
-
-    if isinstance(valor, (int, float)):
-        return float(valor)
-
-    valor = str(valor)
-    valor = valor.replace("R$", "")
-    valor = valor.replace(".", "")
-    valor = valor.replace(",", ".")
-    valor = valor.strip()
-
-    return float(valor or 0)
-
-def formatar_data_brasilia(data):
-    if not data:
-        return ""
-
-    data_utc = data.replace(
-        tzinfo=ZoneInfo("UTC")
-    )
-
-    data_brasilia = data_utc.astimezone(
-        ZoneInfo("America/Sao_Paulo")
-    )
-
-    return data_brasilia.strftime(
-        "%d/%m/%Y %H:%M"
-    )
 
 class Cotacao(db.Model):
     id = db.Column(db.Integer, primary_key=True)
