@@ -147,6 +147,8 @@ def api_criar_motorista():
     )
 
     try:
+        motorista.usuario_sistema = usuario_sistema
+
         db.session.add(motorista)
         db.session.add(usuario_sistema)
         db.session.commit()
@@ -285,6 +287,12 @@ def api_inativar_motorista(motorista_id):
 
     motorista.status = "Inativo"
 
+    if (
+        motorista.usuario_sistema_id is not None
+        and motorista.usuario_sistema is not None
+    ):
+        motorista.usuario_sistema.ativo = False
+
     db.session.commit()
 
     return jsonify({
@@ -362,11 +370,13 @@ def api_editar_motorista(id):
         dados.get("status", motorista.status)
     ).strip()
 
-    if (
+    alterando_para_inativo = (
         perfil_usuario == "administrador"
         and novo_status.lower() == "inativo"
         and str(motorista.status).strip().lower() != "inativo"
-    ):
+    )
+
+    if alterando_para_inativo:
         status_viagem_ativos = [
             "Planejada",
             "Em andamento",
@@ -426,6 +436,13 @@ def api_editar_motorista(id):
     )
     if perfil_usuario == "administrador":
         motorista.status = novo_status
+
+        if (
+            alterando_para_inativo
+            and motorista.usuario_sistema_id is not None
+            and motorista.usuario_sistema is not None
+        ):
+            motorista.usuario_sistema.ativo = False
 
     db.session.commit()
 

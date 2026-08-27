@@ -3325,6 +3325,8 @@ def api_admin_usuarios():
                 status="Ativo"
             )
 
+            motorista.usuario_sistema = novo_usuario
+
             db.session.add(motorista)
 
         db.session.commit()
