@@ -88,6 +88,10 @@ from models.historicos import (
 from models.ocorrencias import OcorrenciaEntrega, OcorrenciaViagem
 from models.comprovantes import ComprovanteEntrega, ArquivoComprovanteViagem
 from models.localizacoes import LocalizacaoMotorista, LocalizacaoViagem
+from utils.constantes import (
+    STATUS_CARGA_ATIVOS_RECURSOS,
+    STATUS_VIAGEM_ATIVOS_RECURSOS
+)
 
 @app.route("/")
 def index():
@@ -443,25 +447,6 @@ def registrar_historico(
 
     db.session.add(historico)
     
-
-STATUS_VIAGEM_ATIVOS_RECURSOS = [
-    "Em andamento",
-    "Em coleta",
-    "Carregando",
-    "Em trânsito",
-    "Parada operacional",
-    "Saiu para entrega"
-]
-
-STATUS_CARGA_ATIVOS_RECURSOS = [
-    "Em andamento",
-    "Em coleta",
-    "Carregando",
-    "Em trânsito",
-    "Parada operacional",
-    "Saiu para entrega"
-]
-
 
 def motorista_possui_outra_viagem_ativa(
     motorista_id,
