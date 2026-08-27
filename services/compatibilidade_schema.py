@@ -134,6 +134,19 @@ def adicionar_colunas_operacionais():
                 "ADD COLUMN senha TEXT"
             )
 
+        if "usuario_sistema_id" not in colunas_motorista:
+            cursor.execute(
+                "ALTER TABLE motorista "
+                "ADD COLUMN usuario_sistema_id INTEGER "
+                "REFERENCES usuario_sistema(id)"
+            )
+
+        cursor.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS "
+            "uq_motorista_usuario_sistema_id "
+            "ON motorista (usuario_sistema_id)"
+        )
+
         # ==========================
         # TABELA CARGA
         # ==========================

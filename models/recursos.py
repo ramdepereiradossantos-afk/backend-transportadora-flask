@@ -14,6 +14,25 @@ class Motorista(db.Model):
     email = db.Column(db.String(120), nullable=True)
     usuario = db.Column(db.String(80), nullable=True, unique=True)
     senha = db.Column(db.String(120), nullable=True)
+    usuario_sistema_id = db.Column(
+        db.Integer,
+        db.ForeignKey("usuario_sistema.id"),
+        nullable=True
+    )
+
+    usuario_sistema = db.relationship(
+        "UsuarioSistema",
+        foreign_keys=[usuario_sistema_id],
+        uselist=False
+    )
+
+    __table_args__ = (
+        db.Index(
+            "uq_motorista_usuario_sistema_id",
+            "usuario_sistema_id",
+            unique=True
+        ),
+    )
 
     # Status cadastral
     status = db.Column(
