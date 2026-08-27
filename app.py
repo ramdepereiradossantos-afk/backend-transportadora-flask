@@ -109,10 +109,12 @@ from services.auditoria import registrar_log
 from routes.public import public_bp
 from routes.auth import auth_bp
 from routes.admin_clientes import admin_clientes_bp
+from routes.admin_veiculos import admin_veiculos_bp
 
 app.register_blueprint(public_bp)
 app.register_blueprint(auth_bp)
 app.register_blueprint(admin_clientes_bp)
+app.register_blueprint(admin_veiculos_bp)
 
 @app.route(
     "/api/admin/cotacoes/<int:id>/aprovar",
@@ -934,106 +936,6 @@ def api_criar_motorista():
         return {
             "erro": "Não foi possível cadastrar o motorista."
         }, 500
-
-@app.route("/api/admin/veiculos", methods=["GET"])
-@jwt_required()
-def api_admin_veiculos():
-    usuario_id = int(get_jwt_identity())
-
-    usuario = db.session.get(
-        UsuarioSistema,
-        usuario_id
-    )
-
-    if not usuario or not usuario.ativo:
-        return jsonify({
-            "erro": "Usuário não autorizado."
-        }), 401
-
-    if str(usuario.perfil).strip().lower() not in [
-        "administrador",
-        "operador"
-    ]:
-        return jsonify({
-            "erro": "Você não possui permissão para acessar veículos."
-        }), 403
-
-    veiculos = Veiculo.query.order_by(
-        Veiculo.data_criacao.desc()
-    ).all()
-
-    lista = []
-
-    for veiculo in veiculos:
-        lista.append({
-            "id": veiculo.id,
-            "placa": veiculo.placa,
-            "modelo": veiculo.modelo,
-            "marca": veiculo.marca,
-            "tipo": veiculo.tipo,
-            "ano": veiculo.ano,
-            "capacidade": veiculo.capacidade,
-            "status": veiculo.status
-        })
-
-    return jsonify(lista), 200
-
-@app.route("/api/admin/veiculos", methods=["POST"])
-@jwt_required()
-def api_criar_veiculo():
-    usuario_id = int(get_jwt_identity())
-
-    usuario = db.session.get(
-        UsuarioSistema,
-        usuario_id
-    )
-
-    if not usuario or not usuario.ativo:
-        return jsonify({
-            "erro": "Usuário não autorizado."
-        }), 401
-
-    perfil_usuario = str(usuario.perfil).strip().lower()
-
-    if perfil_usuario not in [
-        "administrador",
-        "operador"
-    ]:
-        return jsonify({
-            "erro": "Você não possui permissão para criar veículos."
-        }), 403
-
-    dados = request.get_json(silent=True) or {}
-
-    placa = str(dados.get("placa", "")).strip().upper()
-
-    if not placa:
-        return {"erro": "Informe a placa."}, 400
-
-    status = str(dados.get("status", "Disponível")).strip()
-
-    if (
-        perfil_usuario == "operador"
-        and status.lower() == "inativo"
-    ):
-        return jsonify({
-            "erro": "Você não possui permissão para inativar veículos."
-        }), 403
-
-    veiculo = Veiculo(
-        placa=placa,
-        modelo=str(dados.get("modelo", "")).strip(),
-        marca=str(dados.get("marca", "")).strip(),
-        tipo=str(dados.get("tipo", "")).strip(),
-        ano=str(dados.get("ano", "")).strip(),
-        capacidade=str(dados.get("capacidade", "")).strip(),
-        status=status
-    )
-
-    db.session.add(veiculo)
-    db.session.commit()
-
-    return {"mensagem": "Veículo cadastrado com sucesso!"}, 201
 
 @app.route("/api/admin/viagens", methods=["GET"])
 @jwt_required()
@@ -3502,130 +3404,6 @@ def api_criar_ocorrencia_motorista(id):
             "erro": "Não foi possível registrar a ocorrência."
         }), 500
 
-
-@app.route("/api/admin/veiculos/<int:id>/inativar", methods=["PUT"])
-@jwt_required()
-def api_inativar_veiculo(id):
-    usuario_id = int(get_jwt_identity())
-
-    usuario = db.session.get(
-        UsuarioSistema,
-        usuario_id
-    )
-
-    if not usuario or not usuario.ativo:
-        return jsonify({
-            "erro": "Usuário não autorizado."
-        }), 401
-
-    if str(usuario.perfil).strip().lower() != "administrador":
-        return jsonify({
-            "erro": "Somente administradores podem inativar veículos."
-        }), 403
-
-    veiculo = Veiculo.query.get_or_404(id)
-
-    veiculo.status = "Inativo"
-
-    db.session.commit()
-
-    return {"mensagem": "Veículo inativado com sucesso!"}
-
-@app.route("/api/admin/veiculos/<int:id>", methods=["GET"])
-@jwt_required()
-def api_detalhe_veiculo(id):
-    usuario_id = int(get_jwt_identity())
-
-    usuario = db.session.get(
-        UsuarioSistema,
-        usuario_id
-    )
-
-    if not usuario or not usuario.ativo:
-        return jsonify({
-            "erro": "Usuário não autorizado."
-        }), 401
-
-    if str(usuario.perfil).strip().lower() not in [
-        "administrador",
-        "operador"
-    ]:
-        return jsonify({
-            "erro": "Você não possui permissão para consultar veículos."
-        }), 403
-
-    veiculo = Veiculo.query.get_or_404(id)
-
-    return {
-        "id": veiculo.id,
-        "placa": veiculo.placa,
-        "modelo": veiculo.modelo,
-        "marca": veiculo.marca,
-        "tipo": veiculo.tipo,
-        "ano": veiculo.ano,
-        "capacidade": veiculo.capacidade,
-        "status": veiculo.status
-    }
-    
-@app.route("/api/admin/veiculos/<int:id>", methods=["PUT"])
-@jwt_required()
-def api_editar_veiculo(id):
-    usuario_id = int(get_jwt_identity())
-
-    usuario = db.session.get(
-        UsuarioSistema,
-        usuario_id
-    )
-
-    if not usuario or not usuario.ativo:
-        return jsonify({
-            "erro": "Usuário não autorizado."
-        }), 401
-
-    perfil_usuario = str(usuario.perfil).strip().lower()
-
-    if perfil_usuario not in [
-        "administrador",
-        "operador"
-    ]:
-        return jsonify({
-            "erro": "Você não possui permissão para editar veículos."
-        }), 403
-
-    veiculo = Veiculo.query.get_or_404(id)
-    dados = request.get_json()
-
-    status_atual = str(veiculo.status or "").strip()
-    novo_status = str(
-        dados.get("status", veiculo.status) or ""
-    ).strip()
-
-    if (
-        perfil_usuario == "operador"
-        and novo_status.lower() != status_atual.lower()
-        and (
-            novo_status.lower() == "inativo"
-            or status_atual.lower() == "inativo"
-        )
-    ):
-        return jsonify({
-            "erro": (
-                "Você não possui permissão para ativar "
-                "ou inativar veículos."
-            )
-        }), 403
-
-    veiculo.placa = dados.get("placa", veiculo.placa)
-    veiculo.modelo = dados.get("modelo", veiculo.modelo)
-    veiculo.marca = dados.get("marca", veiculo.marca)
-    veiculo.tipo = dados.get("tipo", veiculo.tipo)
-    veiculo.ano = dados.get("ano", veiculo.ano)
-    veiculo.capacidade = dados.get("capacidade", veiculo.capacidade)
-    veiculo.status = novo_status
-
-    db.session.commit()
-
-    return {"mensagem": "Veículo atualizado com sucesso!"}
 
 @app.route("/api/admin/relatorios/resumo", methods=["GET"])
 @jwt_required()
