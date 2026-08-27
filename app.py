@@ -92,6 +92,7 @@ from utils.constantes import (
     STATUS_CARGA_ATIVOS_RECURSOS,
     STATUS_VIAGEM_ATIVOS_RECURSOS
 )
+from services.historicos import registrar_historico
 
 @app.route("/")
 def index():
@@ -433,20 +434,6 @@ def registrar_log(
 
     db.session.add(log)
     db.session.commit()
-
-def registrar_historico(
-    viagem_id,
-    tipo,
-    descricao
-):
-    historico = HistoricoViagem(
-        viagem_id=viagem_id,
-        status=tipo,
-        observacao=descricao
-    )
-
-    db.session.add(historico)
-    
 
 def motorista_possui_outra_viagem_ativa(
     motorista_id,
