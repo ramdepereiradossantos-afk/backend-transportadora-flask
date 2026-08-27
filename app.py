@@ -1,27 +1,59 @@
-from flask import Flask, render_template, request, redirect, url_for, flash, session
+
+from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
 from datetime import datetime, timedelta
-from functools import wraps
+from zoneinfo import ZoneInfo
 from werkzeug.utils import secure_filename
 import os
-
-app = Flask(__name__)
-CORS(app, resources={
-    r"/api/*": {
-        "origins": [
-            "http://localhost:5173",
-            "http://127.0.0.1:5173",
-            "http://localhost:5174",
-            "http://127.0.0.1:5174"
-        ]
-    }
-})
-app.secret_key = os.environ.get(
-    "SECRET_KEY",
-    "ramos_transportes_chave_super_segura_2026_abc123"
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
+from flask import send_file
+import io
+import json
+from flask_jwt_extended import (
+    JWTManager,
+    create_access_token,
+    jwt_required,
+    get_jwt_identity
 )
 
+app = Flask(__name__)
+
+app.config["JWT_SECRET_KEY"] = os.environ.get(
+    "JWT_SECRET_KEY",
+    "troque-esta-chave-em-producao"
+)
+
+app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=8)
+
+jwt = JWTManager(app)
+
+CORS(
+    app,
+    resources={
+        r"/api/*": {
+            "origins": [
+                "http://localhost:5173",
+                "http://127.0.0.1:5173",
+                "http://localhost:5174",
+                "http://127.0.0.1:5174"
+            ]
+        }
+    },
+    allow_headers=[
+        "Content-Type",
+        "Authorization"
+    ],
+    methods=[
+        "GET",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE",
+        "OPTIONS"
+    ]
+)
 USUARIO_ADMIN = os.environ.get("USUARIO_ADMIN", "admin")
 SENHA_ADMIN = os.environ.get("SENHA_ADMIN", "ramos123")
 
@@ -42,34 +74,36 @@ app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
 db = SQLAlchemy(app)
 
-def login_obrigatorio(f):
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        if not session.get("admin_logado"):
-            flash("Você precisa estar logado para acessar essa área.", "erro")
-            return redirect(url_for("login", next=request.path))
-        return f(*args, **kwargs)
-    return decorated_function
+def converter_valor_brasileiro(valor):
+    if not valor:
+        return 0
 
-def cliente_login_obrigatorio(f):
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        if not session.get("cliente_logado"):
-            flash("Você precisa estar logado como cliente para acessar essa área.", "erro")
-            return redirect(url_for("cliente_login"))
-        return f(*args, **kwargs)
-    return decorated_function
+    if isinstance(valor, (int, float)):
+        return float(valor)
 
-def arquivo_permitido(nome_arquivo):
-    return "." in nome_arquivo and nome_arquivo.rsplit(".", 1)[1].lower() in app.config["ALLOWED_EXTENSIONS"]
-def motorista_login_obrigatorio(f):
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        if not session.get("motorista_logado"):
-            flash("Você precisa estar logado como motorista.", "erro")
-            return redirect(url_for("motorista_login"))
-        return f(*args, **kwargs)
-    return decorated_function
+    valor = str(valor)
+    valor = valor.replace("R$", "")
+    valor = valor.replace(".", "")
+    valor = valor.replace(",", ".")
+    valor = valor.strip()
+
+    return float(valor or 0)
+
+def formatar_data_brasilia(data):
+    if not data:
+        return ""
+
+    data_utc = data.replace(
+        tzinfo=ZoneInfo("UTC")
+    )
+
+    data_brasilia = data_utc.astimezone(
+        ZoneInfo("America/Sao_Paulo")
+    )
+
+    return data_brasilia.strftime(
+        "%d/%m/%Y %H:%M"
+    )
 
 class Cotacao(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -80,6 +114,80 @@ class Cotacao(db.Model):
     tipo_carga = db.Column(db.String(50), nullable=False)
     observacoes = db.Column(db.Text, nullable=True)
     data_criacao = db.Column(db.DateTime, default=datetime.utcnow)
+    status = db.Column(
+    db.String(20),
+    nullable=False,
+    default="Pendente"
+)
+    
+class Carga(db.Model):
+    __tablename__ = "carga"
+
+    id = db.Column(
+        db.Integer,
+        primary_key=True
+    )
+
+    cotacao_id = db.Column(
+        db.Integer,
+        db.ForeignKey("cotacao.id"),
+        nullable=False,
+        unique=True
+    )
+
+    cliente = db.Column(
+        db.String(100),
+        nullable=False
+    )
+
+    whatsapp = db.Column(
+        db.String(20),
+        nullable=False
+    )
+
+    origem = db.Column(
+        db.String(100),
+        nullable=False
+    )
+
+    destino = db.Column(
+        db.String(100),
+        nullable=False
+    )
+
+    tipo_carga = db.Column(
+        db.String(50),
+        nullable=False
+    )
+
+    observacoes = db.Column(
+        db.Text,
+        nullable=True
+    )
+
+    status = db.Column(
+    db.String(30),
+    nullable=False,
+    default="Aguardando planejamento"
+)
+
+motorista_id = db.Column(
+    db.Integer,
+    db.ForeignKey("motorista.id"),
+    nullable=True
+)
+
+motorista = db.relationship(
+    "Motorista",
+    backref="cargas"
+)
+
+data_criacao = db.Column(
+    db.DateTime,
+    default=datetime.utcnow
+)
+    
+    
 
 class ClienteUsuario(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -97,6 +205,7 @@ class UsuarioSistema(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     nome = db.Column(db.String(120), nullable=False)
     usuario = db.Column(db.String(80), nullable=False, unique=True)
+    email = db.Column(db.String(120), nullable=True, default="")
     senha = db.Column(db.String(120), nullable=False)
     perfil = db.Column(db.String(30), nullable=False, default="operador")
     ativo = db.Column(db.Boolean, default=True)
@@ -104,13 +213,67 @@ class UsuarioSistema(db.Model):
 
 class LogAcao(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    usuario_id = db.Column(db.Integer, db.ForeignKey('usuario_sistema.id'), nullable=True)
-    usuario_nome = db.Column(db.String(120), nullable=True)
-    acao = db.Column(db.String(120), nullable=False)
-    detalhes = db.Column(db.Text, nullable=True)
-    data_acao = db.Column(db.DateTime, default=datetime.utcnow)
 
-    usuario = db.relationship('UsuarioSistema', backref='logs')
+    usuario_id = db.Column(
+        db.Integer,
+        db.ForeignKey("usuario_sistema.id"),
+        nullable=True
+    )
+
+    usuario_nome = db.Column(
+        db.String(120),
+        nullable=True
+    )
+
+    perfil = db.Column(
+        db.String(30),
+        nullable=True
+    )
+
+    modulo = db.Column(
+        db.String(80),
+        nullable=True
+    )
+
+    acao = db.Column(
+        db.String(120),
+        nullable=False
+    )
+
+    entidade = db.Column(
+        db.String(80),
+        nullable=True
+    )
+
+    entidade_id = db.Column(
+        db.Integer,
+        nullable=True
+    )
+
+    detalhes = db.Column(
+        db.Text,
+        nullable=True
+    )
+
+    antes = db.Column(
+        db.Text,
+        nullable=True
+    )
+
+    depois = db.Column(
+        db.Text,
+        nullable=True
+    )
+
+    data_acao = db.Column(
+        db.DateTime,
+        default=datetime.utcnow
+    )
+
+    usuario = db.relationship(
+        "UsuarioSistema",
+        backref="logs"
+    )
 
 class Cliente(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -137,10 +300,24 @@ class Motorista(db.Model):
     email = db.Column(db.String(120), nullable=True)
     usuario = db.Column(db.String(80), nullable=True, unique=True)
     senha = db.Column(db.String(120), nullable=True)
-    status = db.Column(db.String(20), default="Ativo")
-    observacoes = db.Column(db.Text, nullable=True)
-    data_criacao = db.Column(db.DateTime, default=datetime.utcnow)
 
+    # Status cadastral
+    status = db.Column(
+        db.String(20),
+        default="Ativo"
+    )
+
+    # Status operacional
+    disponibilidade = db.Column(
+        db.String(20),
+        default="Disponível"
+    )
+
+    observacoes = db.Column(db.Text, nullable=True)
+    data_criacao = db.Column(
+        db.DateTime,
+        default=datetime.utcnow
+    )
 class LocalizacaoMotorista(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     motorista_id = db.Column(db.Integer, db.ForeignKey('motorista.id'))
@@ -200,10 +377,82 @@ class Rastreamento(db.Model):
     codigo = db.Column(db.String(30), unique=True, nullable=False)
     cliente = db.Column(db.String(100), nullable=False)  # vamos manter por compatibilidade
     status = db.Column(db.String(50), nullable=False)
+    valor_frete = db.Column(db.Float, default=0)
+    status_pagamento = db.Column(db.String(30), default="Pendente")
     local_atual = db.Column(db.String(100), nullable=False)
     destino = db.Column(db.String(100), nullable=False)
     previsao_entrega = db.Column(db.DateTime, nullable=True)
     ultima_atualizacao = db.Column(db.DateTime, default=datetime.utcnow)
+    
+class Viagem(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    
+    codigo = db.Column(
+    db.String(30),
+    nullable=True,
+    unique=True
+)
+
+    rastreamento_id = db.Column(db.Integer, db.ForeignKey("rastreamento.id"), nullable=False)
+    motorista_id = db.Column(db.Integer, db.ForeignKey("motorista.id"), nullable=True)
+    veiculo_id = db.Column(db.Integer, db.ForeignKey("veiculo.id"), nullable=True)
+
+    origem = db.Column(db.String(120), nullable=False)
+    destino = db.Column(db.String(120), nullable=False)
+    status = db.Column(db.String(30), default="Planejada")
+
+    data_saida = db.Column(db.DateTime, nullable=True)
+    previsao_entrega = db.Column(db.DateTime, nullable=True)
+    data_criacao = db.Column(db.DateTime, default=datetime.utcnow)
+
+    carga = db.relationship("Rastreamento", backref="viagens")
+    motorista = db.relationship("Motorista", backref="viagens")
+    veiculo = db.relationship("Veiculo", backref="viagens")
+    
+class HistoricoOperacao(db.Model):
+    _tablename__ = "historico_operacao"
+
+    id = db.Column(
+        db.Integer,
+        primary_key=True
+    )
+
+    viagem_id = db.Column(
+        db.Integer,
+        db.ForeignKey("viagem.id"),
+        nullable=False
+    )
+
+    tipo = db.Column(
+        db.String(40),
+        nullable=False
+    )
+
+    descricao = db.Column(
+        db.Text,
+        nullable=False
+    )
+
+    data_hora = db.Column(
+        db.DateTime,
+        default=datetime.utcnow
+    )
+
+    viagem = db.relationship(
+        "Viagem",
+        backref="historico_operacional"
+    )
+    
+class HistoricoViagem(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+
+    viagem_id = db.Column(db.Integer, db.ForeignKey("viagem.id"), nullable=False)
+
+    status = db.Column(db.String(50), nullable=False)
+    observacao = db.Column(db.Text, nullable=True)
+    data_evento = db.Column(db.DateTime, default=datetime.utcnow)
+
+    viagem = db.relationship("Viagem", backref="historico")
 
 
 class HistoricoRastreamento(db.Model):
@@ -217,16 +466,6 @@ class HistoricoRastreamento(db.Model):
     rastreamento = db.relationship('Rastreamento', backref='historico')
 
 
-class ComprovanteEntrega(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    rastreamento_id = db.Column(db.Integer, db.ForeignKey('rastreamento.id'), nullable=False)
-    nome_arquivo = db.Column(db.String(255), nullable=False)
-    observacao = db.Column(db.Text)
-    data_upload = db.Column(db.DateTime, default=datetime.utcnow)
-
-    rastreamento = db.relationship('Rastreamento', backref='comprovantes')
-
-
 class OcorrenciaEntrega(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     rastreamento_id = db.Column(db.Integer, db.ForeignKey('rastreamento.id'), nullable=False)
@@ -235,7 +474,114 @@ class OcorrenciaEntrega(db.Model):
     data_ocorrencia = db.Column(db.DateTime, default=datetime.utcnow)
 
     rastreamento = db.relationship('Rastreamento', backref='ocorrencias')
+    
+class OcorrenciaViagem(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
 
+    viagem_id = db.Column(
+        db.Integer,
+        db.ForeignKey("viagem.id"),
+        nullable=False
+    )
+
+    descricao = db.Column(
+        db.Text,
+        nullable=False
+    )
+
+    data_criacao = db.Column(
+        db.DateTime,
+        default=datetime.utcnow
+    )
+
+    viagem = db.relationship(
+        "Viagem",
+        backref="ocorrencias"
+    )
+    
+class ComprovanteEntrega(db.Model):
+    
+    __tablename__ = "finalizacao_entrega"
+    
+    id = db.Column(
+        db.Integer,
+        primary_key=True
+    )
+
+    viagem_id = db.Column(
+        db.Integer,
+        db.ForeignKey("viagem.id"),
+        nullable=False
+    )
+
+    recebedor = db.Column(
+        db.String(120),
+        nullable=False
+    )
+
+    observacao = db.Column(
+        db.Text
+    )
+
+    data_entrega = db.Column(
+        db.DateTime,
+        default=datetime.utcnow
+    )
+
+    viagem = db.relationship(
+        "Viagem",
+        backref="comprovantes"
+    )  
+    
+class ArquivoComprovanteViagem(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+
+    viagem_id = db.Column(
+        db.Integer,
+        db.ForeignKey("viagem.id"),
+        nullable=False
+    )
+
+    nome_arquivo = db.Column(db.String(255), nullable=False)
+
+    data_upload = db.Column(
+        db.DateTime,
+        default=datetime.utcnow
+    )
+
+    viagem = db.relationship(
+        "Viagem",
+        backref="arquivos_comprovante"
+    )    
+    
+class LocalizacaoViagem(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+
+    viagem_id = db.Column(
+        db.Integer,
+        db.ForeignKey("viagem.id"),
+        nullable=False
+    )
+
+    localizacao = db.Column(
+        db.String(180),
+        nullable=False
+    )
+
+    observacao = db.Column(
+        db.Text
+    )
+
+    data_registro = db.Column(
+        db.DateTime,
+        default=datetime.utcnow
+    )
+
+    viagem = db.relationship(
+        "Viagem",
+        backref="localizacoes"
+    ) 
+    
 
 @app.route("/")
 def index():
@@ -244,1329 +590,645 @@ def index():
         "status": "online"
     }
 
-@app.route("/sobre")
-def sobre():
-    return render_template("sobre.html")
-
-
-@app.route("/parceiros")
-def parceiros():
-    return render_template("parceiros.html")
-
-@app.route("/servicos")
-def servicos():
-    return render_template("servicos.html")
-
-
-@app.route("/areas-atendidas")
-def areas_atendidas():
-    return render_template("areas_atendidas.html")
-
-
-@app.route("/contato")
-def contato():
-    return render_template("contato.html")
-
-@app.route("/cliente/login", methods=["GET", "POST"])
-def cliente_login():
-    if request.method == "POST":
-        email = request.form.get("email", "").strip().lower()
-        senha = request.form.get("senha", "").strip()
-
-        cliente = ClienteUsuario.query.filter_by(email=email, senha=senha, ativo=True).first()
-
-        if not cliente:
-            flash("E-mail ou senha inválidos.", "erro")
-            return redirect(url_for("cliente_login"))
-
-        # 🔥 LOGIN
-        session["cliente_logado"] = True
-        session["cliente_id"] = cliente.id
-        session["cliente_nome"] = cliente.nome
-        session["cliente_empresa"] = cliente.empresa
-
-        # 🔥 NOVO (IMPORTANTÍSSIMO)
-        session["cliente_id_ref"] = cliente.cliente_id
-
-        flash("Login realizado com sucesso!", "sucesso")
-        return redirect(url_for("cliente_painel"))
-
-    return render_template("cliente_login.html")
-
-@app.route("/cliente/painel")
-@cliente_login_obrigatorio
-def cliente_painel():
-    cliente_id_ref = session.get("cliente_id_ref")
-    empresa = session.get("cliente_empresa")
-
-    if cliente_id_ref:
-        cargas = Rastreamento.query.filter_by(cliente_id=cliente_id_ref).order_by(
-            Rastreamento.ultima_atualizacao.desc()
-        ).all()
-    else:
-        cargas = Rastreamento.query.filter_by(cliente=empresa).order_by(
-            Rastreamento.ultima_atualizacao.desc()
-        ).all()
-
-    total_cargas = len(cargas)
-    entregues = len([c for c in cargas if c.status == "Entregue"])
-    em_transito = len([c for c in cargas if c.status == "Em trânsito"])
-    em_coleta = len([c for c in cargas if c.status == "Em coleta"])
-    saiu_entrega = len([c for c in cargas if c.status == "Saiu para entrega"])
-
-    return render_template(
-        "cliente_painel.html",
-        cargas=cargas,
-        total_cargas=total_cargas,
-        entregues=entregues,
-        em_transito=em_transito,
-        em_coleta=em_coleta,
-        saiu_entrega=saiu_entrega
-    )
-
-
-@app.route("/cliente/carga/<int:id>")
-@cliente_login_obrigatorio
-def cliente_carga_detalhe(id):
-    carga = Rastreamento.query.get_or_404(id)
-
-    cliente_id_ref = session.get("cliente_id_ref")
-    empresa = session.get("cliente_empresa")
-
-    if cliente_id_ref:
-        if carga.cliente_id != cliente_id_ref:
-            flash("Acesso não autorizado.", "erro")
-            return redirect(url_for("cliente_painel"))
-    else:
-        if carga.cliente != empresa:
-            flash("Acesso não autorizado.", "erro")
-            return redirect(url_for("cliente_painel"))
-
-    historico = HistoricoRastreamento.query.filter_by(
-        rastreamento_id=id
-    ).order_by(HistoricoRastreamento.data_evento.desc()).all()
-
-    comprovantes = ComprovanteEntrega.query.filter_by(
-        rastreamento_id=id
-    ).order_by(ComprovanteEntrega.data_upload.desc()).all()
-
-    ocorrencias = OcorrenciaEntrega.query.filter_by(
-        rastreamento_id=id
-    ).order_by(OcorrenciaEntrega.data_ocorrencia.desc()).all()
-
-    distancia_restante, eta_estimado = calcular_eta(carga)
-
-    return render_template(
-        "cliente_carga_detalhe.html",
-        carga=carga,
-        historico=historico,
-        comprovantes=comprovantes,
-        ocorrencias=ocorrencias,
-        now=datetime.utcnow(),
-        distancia_restante=distancia_restante,
-        eta_estimado=eta_estimado
-) 
-
-@app.route("/login", methods=["GET", "POST"])
-def login():
-    if request.method == "POST":
-        usuario_digitado = request.form.get("usuario", "").strip()
-        senha_digitada = request.form.get("senha", "").strip()
-
-        usuario = UsuarioSistema.query.filter_by(
-            usuario=usuario_digitado,
-            senha=senha_digitada,
-            ativo=True
-        ).first()
-
-        if usuario:
-            session["admin_logado"] = True
-            session["usuario_sistema_id"] = usuario.id
-            session["usuario_sistema_nome"] = usuario.nome
-            session["usuario_sistema_perfil"] = usuario.perfil
-
-            registrar_log("Login no sistema", f"Usuário {usuario.nome} acessou o painel.")
-
-            flash("Login realizado com sucesso!", "sucesso")
-
-            next_page = request.args.get("next")
-            return redirect(next_page or url_for("admin"))
-
-        flash("Usuário ou senha incorretos.", "erro")
-
-    return render_template("login.html")
-
-
-@app.route("/logout")
-def logout():
-    if session.get("usuario_sistema_nome"):
-        registrar_log("Logout do sistema", f"Usuário {session.get('usuario_sistema_nome')} saiu do painel.")
-
-    session.pop("admin_logado", None)
-    session.pop("usuario_sistema_id", None)
-    session.pop("usuario_sistema_nome", None)
-    session.pop("usuario_sistema_perfil", None)
-
-    flash("Você saiu do painel.", "sucesso")
-    return redirect(url_for("login"))
-
-
-@app.route("/enviar_cotacao", methods=["POST"])
-def enviar_cotacao():
-    cliente = request.form.get("cliente", "").strip()
-    whatsapp = request.form.get("whatsapp", "").strip()
-    origem = request.form.get("origem", "").strip()
-    destino = request.form.get("destino", "").strip()
-    tipo_carga = request.form.get("tipo_carga", "").strip()
-    observacoes = request.form.get("observacoes", "").strip()
-
-    if not all([cliente, whatsapp, origem, destino, tipo_carga]):
-        flash("Preencha todos os campos obrigatórios da cotação.", "erro")
-        return redirect(url_for("index") + "#cotacao")
-
-    nova_cotacao = Cotacao(
-        cliente=cliente,
-        whatsapp=whatsapp,
-        origem=origem,
-        destino=destino,
-        tipo_carga=tipo_carga,
-        observacoes=observacoes
-    )
-    db.session.add(nova_cotacao)
-    db.session.commit()
-
-    flash("Orçamento enviado com sucesso!", "sucesso")
-    return redirect(url_for("index") + "#cotacao")
-
-
-@app.route("/rastreamento", methods=["POST"])
-def rastreamento():
-    codigo = request.form.get("codigo", "").strip().upper()
-
-    if not codigo:
-        flash("Digite um código para consultar.", "erro")
-        return redirect(url_for("index") + "#rastreamento")
-
-    carga = Rastreamento.query.filter_by(codigo=codigo).first()
-
-    if not carga:
-        flash("Código de rastreamento não encontrado.", "erro")
-        return redirect(url_for("index") + "#rastreamento")
-
-    return render_template("rastreamento_resultado.html", carga=carga)
-
-@app.route("/admin/rastreamentos")
-@login_obrigatorio
-def admin_rastreamento():
-    cargas = Rastreamento.query.order_by(Rastreamento.ultima_atualizacao.desc()).all()
-    agora = datetime.utcnow()
-    grafico_status_labels=["Em coleta", "Em trânsito", "Saiu para entrega", "Entregue", "Atrasadas"],
-    return render_template("admin_rastreamento.html", cargas=cargas, agora=agora)
-
-@app.route("/admin")
-@login_obrigatorio
-def admin():
-    total_cargas = Rastreamento.query.count()
-
-    em_coleta = Rastreamento.query.filter_by(status="Em coleta").count()
-    em_transito = Rastreamento.query.filter_by(status="Em trânsito").count()
-    saiu_entrega = Rastreamento.query.filter_by(status="Saiu para entrega").count()
-    entregues = Rastreamento.query.filter_by(status="Entregue").count()
-
-    total_ocorrencias = OcorrenciaEntrega.query.count()
-
-    agora = datetime.utcnow()
-
-    atrasadas = Rastreamento.query.filter(
-        Rastreamento.previsao_entrega != None,
-        Rastreamento.previsao_entrega < agora,
-        Rastreamento.status != "Entregue"
-    ).count()
-
-    cotacoes = Cotacao.query.order_by(Cotacao.data_criacao.desc()).all()
-
-    return render_template(
-        "admin.html",
-        cotacoes=cotacoes,
-        total_cargas=total_cargas,
-        em_coleta=em_coleta,
-        em_transito=em_transito,
-        saiu_entrega=saiu_entrega,
-        entregues=entregues,
-        total_ocorrencias=total_ocorrencias,
-        atrasadas=atrasadas,
-        grafico_status_labels=[
-            "Em coleta",
-            "Em trânsito",
-            "Saiu para entrega",
-            "Entregue",
-            "Atrasadas"
-        ],
-        grafico_status_valores=[
-            em_coleta,
-            em_transito,
-            saiu_entrega,
-            entregues,
-            atrasadas
-        ]
-    )
-@app.route("/admin/rastreamentos/editar/<int:id>", methods=["GET", "POST"])
-@login_obrigatorio
-def editar_rastreamento(id):
-    carga = Rastreamento.query.get_or_404(id)
-
-    clientes = Cliente.query.filter_by(ativo=True).order_by(Cliente.razao_social.asc()).all()
-    motoristas = Motorista.query.filter_by(status="Ativo").order_by(Motorista.nome.asc()).all()
-    veiculos = Veiculo.query.order_by(Veiculo.placa.asc()).all()
-    rotas = Rota.query.filter_by(status="Ativa").order_by(Rota.nome.asc()).all()
-
-    if request.method == "POST":
-        novo_codigo = request.form.get("codigo", "").strip().upper()
-        cliente_id = request.form.get("cliente_id", "").strip()
-        motorista_id = request.form.get("motorista_id", "").strip()
-        veiculo_id = request.form.get("veiculo_id", "").strip()
-        rota_id = request.form.get("rota_id", "").strip()
-        carga.destino_latitude = request.form.get("destino_latitude", "").strip()
-        carga.destino_longitude = request.form.get("destino_longitude", "").strip()
-        carga.destino = request.form.get("destino", "").strip()
-
-        duplicado = Rastreamento.query.filter(
-            Rastreamento.codigo == novo_codigo,
-            Rastreamento.id != carga.id
-        ).first()
-
-        if duplicado:
-            flash("Já existe outro rastreamento com esse código.", "erro")
-            return redirect(url_for("editar_rastreamento", id=id))
-
-        cliente_obj = Cliente.query.get(cliente_id)
-
-        if not cliente_obj:
-            flash("Cliente não encontrado.", "erro")
-            return redirect(url_for("editar_rastreamento", id=id))
-
-        carga.codigo = novo_codigo
-        carga.cliente_id = cliente_obj.id
-        carga.cliente = cliente_obj.razao_social
-        carga.motorista_id = int(motorista_id) if motorista_id else None
-        carga.veiculo_id = int(veiculo_id) if veiculo_id else None
-        carga.rota_id = int(rota_id) if rota_id else None
-        carga.status = request.form.get("status", "").strip()
-        carga.local_atual = request.form.get("local_atual", "").strip()
-        carga.destino = request.form.get("destino", "").strip()
-        carga.ultima_atualizacao = datetime.utcnow()
-
-        db.session.commit()
-
-        historico = HistoricoRastreamento(
-            rastreamento_id=carga.id,
-            status=carga.status,
-            local=carga.local_atual,
-            observacao="Atualização manual no painel"
-        )
-
-        db.session.add(historico)
-        db.session.commit()
-
-        registrar_log(
-    "Edição de rastreamento",
-    f"Carga {carga.codigo} atualizada. Status: {carga.status}."
-)
-
-        flash("Rastreamento atualizado com sucesso!", "sucesso")
-        return redirect(url_for("admin_rastreamento"))
-
-    return render_template(
-        "editar_rastreamento.html",
-        carga=carga,
-        clientes=clientes,
-        motoristas=motoristas,
-        veiculos=veiculos,
-        rotas=rotas,
-    )
-
-@app.route("/admin/rastreamentos/<int:id>/comprovante", methods=["GET", "POST"])
-@login_obrigatorio
-def upload_comprovante(id):
-    carga = Rastreamento.query.get_or_404(id)
-
-    if request.method == "POST":
-        arquivo = request.files.get("arquivo")
-        observacao = request.form.get("observacao", "").strip()
-
-        if not arquivo or arquivo.filename == "":
-            flash("Selecione um arquivo para enviar.", "erro")
-            return redirect(url_for("upload_comprovante", id=id))
-
-        if not arquivo_permitido(arquivo.filename):
-            flash("Formato inválido. Envie PNG, JPG, JPEG ou PDF.", "erro")
-            return redirect(url_for("upload_comprovante", id=id))
-
-        nome_seguro = secure_filename(arquivo.filename)
-        nome_final = f"{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{nome_seguro}"
-        caminho_arquivo = os.path.join(app.config["UPLOAD_FOLDER"], nome_final)
-        arquivo.save(caminho_arquivo)
-
-        comprovante = ComprovanteEntrega(
-            rastreamento_id=carga.id,
-            nome_arquivo=nome_final,
-            observacao=observacao
-        )
-
-        db.session.add(comprovante)
-
-        historico = HistoricoRastreamento(
-            rastreamento_id=carga.id,
-            status=carga.status,
-            local=carga.local_atual,
-            observacao="Comprovante de entrega anexado"
-        )
-
-        db.session.add(historico)
-        db.session.commit()
-
-        registrar_log(
-    "Upload de comprovante",
-    f"Comprovante enviado para a carga {carga.codigo}."
-)
-
-        flash("Comprovante enviado com sucesso!", "sucesso")
-        return redirect(url_for("admin_rastreamento"))
-
-    return render_template("upload_comprovante.html", carga=carga)
-
-@app.route("/admin/rastreamentos/<int:id>/ocorrencia", methods=["GET", "POST"])
-@login_obrigatorio
-def nova_ocorrencia(id):
-    carga = Rastreamento.query.get_or_404(id)
-
-    if request.method == "POST":
-        titulo = request.form.get("titulo", "").strip()
-        descricao = request.form.get("descricao", "").strip()
-
-        if not titulo or not descricao:
-            flash("Preencha título e descrição da ocorrência.", "erro")
-            return redirect(url_for("nova_ocorrencia", id=id))
-
-        ocorrencia = OcorrenciaEntrega(
-            rastreamento_id=carga.id,
-            titulo=titulo,
-            descricao=descricao
-        )
-
-        db.session.add(ocorrencia)
-
-        historico = HistoricoRastreamento(
-            rastreamento_id=carga.id,
-            status=carga.status,
-            local=carga.local_atual,
-            observacao=f"Ocorrência registrada: {titulo}"
-        )
-
-        db.session.add(historico)
-        db.session.commit()
-
-        registrar_log(
-    "Registro de ocorrência",
-    f"Ocorrência registrada na carga {carga.codigo}: {titulo}."
-)
-
-        flash("Ocorrência registrada com sucesso!", "sucesso")
-        return redirect(url_for("admin_rastreamento"))
-
-    return render_template("nova_ocorrencia.html", carga=carga)
-
-@app.route("/admin/clientes")
-@login_obrigatorio
-def admin_clientes():
-    clientes = Cliente.query.order_by(Cliente.data_criacao.desc()).all()
-    return render_template("admin_clientes.html", clientes=clientes)
-
-
-@app.route("/admin/clientes/novo", methods=["GET", "POST"])
-@login_obrigatorio
-def novo_cliente():
-    if request.method == "POST":
-
-        # 🔹 DADOS DO CLIENTE
-        razao_social = request.form.get("razao_social", "").strip()
-        nome_fantasia = request.form.get("nome_fantasia", "").strip()
-        documento = request.form.get("documento", "").strip()
-        responsavel = request.form.get("responsavel", "").strip()
-        email = request.form.get("email", "").strip().lower()
-        telefone = request.form.get("telefone", "").strip()
-        endereco = request.form.get("endereco", "").strip()
-        cidade = request.form.get("cidade", "").strip()
-        estado = request.form.get("estado", "").strip().upper()
-
-        # 🔥 👉 COLE AQUI
-        email_acesso = request.form.get("email_acesso", "").strip().lower()
-        senha_acesso = request.form.get("senha_acesso", "").strip()
-
-        if not razao_social:
-            flash("Informe a razão social do cliente.", "erro")
-            return redirect(url_for("novo_cliente"))
-
-        cliente = Cliente(
-            razao_social=razao_social,
-            nome_fantasia=nome_fantasia,
-            documento=documento,
-            responsavel=responsavel,
-            email=email,
-            telefone=telefone,
-            endereco=endereco,
-            cidade=cidade,
-            estado=estado,
-            ativo=True
-        )
-
-        db.session.add(cliente)
-        db.session.commit()
-
-        # 🔥 CRIA LOGIN DO CLIENTE
-        if email_acesso and senha_acesso:
-            usuario_cliente = ClienteUsuario(
-                cliente_id=cliente.id,
-                nome=responsavel or razao_social,
-                empresa=razao_social,
-                email=email_acesso,
-                senha=senha_acesso,
-                ativo=True
+@app.route("/api/login", methods=["POST"])
+def api_login():
+    dados = request.get_json(silent=True) or {}
+
+    usuario_digitado = str(
+        dados.get("usuario", "")
+    ).strip()
+
+    senha_digitada = str(
+        dados.get("senha", "")
+    ).strip()
+    
+    print("=" * 50)
+    print("USUÁRIO RECEBIDO:", usuario_digitado)
+    print("SENHA RECEBIDA:", senha_digitada)
+
+    if not usuario_digitado or not senha_digitada:
+        return {
+            "erro": "Informe o usuário e a senha."
+        }, 400
+        
+    usuarios = UsuarioSistema.query.all()
+
+    for u in usuarios:
+            print(
+                u.id,
+                 repr(u.usuario),
+                repr(u.senha),
+                u.ativo,
+                repr(u.perfil)
             )
 
-            db.session.add(usuario_cliente)
-            db.session.commit()
+    usuario = UsuarioSistema.query.filter_by(
+        usuario=usuario_digitado,
+        senha=senha_digitada,
+        ativo=True
+    ).first()
 
-        flash("Cliente cadastrado com sucesso!", "sucesso")
-        return redirect(url_for("admin_clientes"))
+    if not usuario:
+        return {
+            "erro": "Usuário ou senha inválidos."
+        }, 401
 
-    return render_template("novo_cliente.html")
+    access_token = create_access_token(
+        identity=str(usuario.id),
+        additional_claims={
+            "nome": usuario.nome,
+            "perfil": usuario.perfil,
+            "usuario": usuario.usuario,
+        }
+    )
 
-    
+    registrar_log(
+        "Login no sistema",
+        f"Usuário {usuario.nome} acessou o painel React.",
+        usuario_id=usuario.id,
+        usuario_nome=usuario.nome,
+        perfil=usuario.perfil
+    )
+
+    return {
+        "access_token": access_token,
+        "usuario": {
+            "id": usuario.id,
+            "nome": usuario.nome,
+            "usuario": usuario.usuario,
+            "perfil": usuario.perfil,
+        }
+    }, 200
 
 
-@app.route("/admin/clientes/editar/<int:id>", methods=["GET", "POST"])
-@login_obrigatorio
-def editar_cliente(id):
-    cliente = Cliente.query.get_or_404(id)
+@app.route(
+    "/api/admin/cotacoes/<int:id>/aprovar",
+    methods=["POST"]
+)
+@jwt_required()
+def aprovar_cotacao(id):
+    cotacao = db.session.get(Cotacao, id)
 
-    if request.method == "POST":
-        cliente.razao_social = request.form.get("razao_social", "").strip()
-        cliente.nome_fantasia = request.form.get("nome_fantasia", "").strip()
-        cliente.documento = request.form.get("documento", "").strip()
-        cliente.responsavel = request.form.get("responsavel", "").strip()
-        cliente.email = request.form.get("email", "").strip().lower()
-        cliente.telefone = request.form.get("telefone", "").strip()
-        cliente.endereco = request.form.get("endereco", "").strip()
-        cliente.cidade = request.form.get("cidade", "").strip()
-        cliente.estado = request.form.get("estado", "").strip().upper()
-        cliente.ativo = True if request.form.get("ativo") == "on" else False
+    if not cotacao:
+        return jsonify({
+            "erro": "Cotação não encontrada."
+        }), 404
 
-        if not cliente.razao_social:
-            flash("Informe a razão social do cliente.", "erro")
-            return redirect(url_for("editar_cliente", id=id))
+    carga_existente = Carga.query.filter_by(
+        cotacao_id=cotacao.id
+    ).first()
+
+    if carga_existente:
+        return jsonify({
+            "erro": "Esta cotação já foi aprovada."
+        }), 400
+
+    try:
+        carga = Carga(
+            cotacao_id=cotacao.id,
+            cliente=cotacao.cliente,
+            whatsapp=cotacao.whatsapp,
+            origem=cotacao.origem,
+            destino=cotacao.destino,
+            tipo_carga=cotacao.tipo_carga,
+            observacoes=cotacao.observacoes
+        )
+
+        db.session.add(carga)
+        db.session.flush()
+
+        rastreamento = Rastreamento(
+            codigo="TEMPORARIO",
+            cliente=cotacao.cliente,
+            status="Pendente",
+            local_atual=cotacao.origem,
+            destino=cotacao.destino,
+            ultima_atualizacao=datetime.utcnow()
+        )
+
+        db.session.add(rastreamento)
+        db.session.flush()
+
+        rastreamento.codigo = (
+            f"CG-{rastreamento.id:05d}"
+        )
 
         db.session.commit()
 
-        flash("Cliente atualizado com sucesso!", "sucesso")
-        return redirect(url_for("admin_clientes"))
+        return jsonify({
+            "mensagem": (
+                "Cotação aprovada e carga criada "
+                "com sucesso!"
+            ),
+            "cotacao_id": cotacao.id,
+            "carga_id": carga.id,
+            "rastreamento_id": rastreamento.id,
+            "codigo_carga": rastreamento.codigo
+        }), 201
 
-    return render_template("editar_cliente.html", cliente=cliente)
+    except Exception as erro:
+        db.session.rollback()
+
+        print(
+            "ERRO AO APROVAR COTAÇÃO:",
+            erro
+        )
+
+        return jsonify({
+            "erro": "Não foi possível aprovar a cotação."
+        }), 500
+@app.route("/api/admin/cotacoes", methods=["POST"])
+@jwt_required()
+def api_criar_cotacao_admin():
+    usuario_id = int(get_jwt_identity())
+
+    usuario = db.session.get(
+        UsuarioSistema,
+        usuario_id
+    )
+
+    if not usuario or not usuario.ativo:
+        return jsonify({
+            "erro": "Usuário não autorizado."
+        }), 401
+
+    if str(usuario.perfil).strip().lower() not in [
+        "administrador",
+        "operador"
+    ]:
+        return jsonify({
+            "erro": "Você não possui permissão para cadastrar cotações."
+        }), 403
+
+    dados = request.get_json(silent=True) or {}
+
+    cliente = str(
+        dados.get("cliente", "")
+    ).strip()
+
+    whatsapp = str(
+        dados.get("whatsapp", "")
+    ).strip()
+
+    origem = str(
+        dados.get("origem", "")
+    ).strip()
+
+    destino = str(
+        dados.get("destino", "")
+    ).strip()
+
+    tipo_carga = str(
+        dados.get("tipo_carga", "")
+    ).strip()
+
+    observacoes = str(
+        dados.get("observacoes", "")
+    ).strip()
+
+    if not cliente:
+        return jsonify({
+            "erro": "Informe o cliente."
+        }), 400
+
+    if not whatsapp:
+        return jsonify({
+            "erro": "Informe o WhatsApp."
+        }), 400
+
+    if not origem:
+        return jsonify({
+            "erro": "Informe a origem."
+        }), 400
+
+    if not destino:
+        return jsonify({
+            "erro": "Informe o destino."
+        }), 400
+
+    if not tipo_carga:
+        return jsonify({
+            "erro": "Informe o tipo da carga."
+        }), 400
+
+    try:
+        cotacao = Cotacao(
+            cliente=cliente,
+            whatsapp=whatsapp,
+            origem=origem,
+            destino=destino,
+            tipo_carga=tipo_carga,
+            observacoes=observacoes
+        )
+
+        db.session.add(cotacao)
+        db.session.commit()
+
+        return jsonify({
+            "mensagem": "Cotação cadastrada com sucesso!",
+            "cotacao": {
+                "id": cotacao.id,
+                "cliente": cotacao.cliente,
+                "whatsapp": cotacao.whatsapp,
+                "origem": cotacao.origem,
+                "destino": cotacao.destino,
+                "tipo_carga": cotacao.tipo_carga,
+                "observacoes": cotacao.observacoes
+            }
+        }), 201
+
+    except Exception as erro:
+        db.session.rollback()
+
+        print("ERRO AO CADASTRAR COTAÇÃO:", erro)
+
+        return jsonify({
+            "erro": "Não foi possível cadastrar a cotação."
+        }), 500
 
 
-@app.route("/admin/clientes/excluir/<int:id>", methods=["POST"])
-@login_obrigatorio
-def excluir_cliente(id):
-    cliente = Cliente.query.get_or_404(id)
-
-    db.session.delete(cliente)
-    db.session.commit()
-
-    flash("Cliente excluído com sucesso!", "sucesso")
-    return redirect(url_for("admin_clientes"))
-
-def adicionar_colunas_operacionais():
+def adicionar_colunas_auditoria():
     import sqlite3
 
     conexao = sqlite3.connect(db_path)
     cursor = conexao.cursor()
 
-    cursor.execute("PRAGMA table_info(rastreamento)")
-    colunas_rastreamento = [coluna[1] for coluna in cursor.fetchall()]
+    cursor.execute("PRAGMA table_info(log_acao)")
+    colunas = [coluna[1] for coluna in cursor.fetchall()]
 
-    if "cliente_id" not in colunas_rastreamento:
-        cursor.execute("ALTER TABLE rastreamento ADD COLUMN cliente_id INTEGER")
-        conexao.commit()
+    novas_colunas = {
+        "perfil": "TEXT",
+        "modulo": "TEXT",
+        "entidade": "TEXT",
+        "entidade_id": "INTEGER",
+        "antes": "TEXT",
+        "depois": "TEXT",
+    }
 
-    if "motorista_id" not in colunas_rastreamento:
-        cursor.execute("ALTER TABLE rastreamento ADD COLUMN motorista_id INTEGER")
-        conexao.commit()
+    for nome_coluna, tipo_coluna in novas_colunas.items():
+        if nome_coluna not in colunas:
+            cursor.execute(
+                f"ALTER TABLE log_acao "
+                f"ADD COLUMN {nome_coluna} {tipo_coluna}"
+            )
 
-    if "veiculo_id" not in colunas_rastreamento:
-        cursor.execute("ALTER TABLE rastreamento ADD COLUMN veiculo_id INTEGER")
-        conexao.commit()
-
-    if "rota_id" not in colunas_rastreamento:
-        cursor.execute("ALTER TABLE rastreamento ADD COLUMN rota_id INTEGER")
-        conexao.commit()
-
-    if "previsao_entrega" not in colunas_rastreamento:
-        cursor.execute("ALTER TABLE rastreamento ADD COLUMN previsao_entrega DATETIME")
-        conexao.commit()
-
-    cursor.execute("PRAGMA table_info(cliente_usuario)")
-    colunas_cliente_usuario = [coluna[1] for coluna in cursor.fetchall()]
-
-    if "cliente_id" not in colunas_cliente_usuario:
-        cursor.execute("ALTER TABLE cliente_usuario ADD COLUMN cliente_id INTEGER")
-        conexao.commit()
-
-        registrar_log(
-    "Exclusão de cliente",
-    "Cliente {cliente.razao_social} foi excluído."
-)
-
-        previsao_entrega_str = request.form.get("previsao_entrega", "").strip()
-
-        cursor.execute("PRAGMA table_info(motorista)")
-        colunas_motorista = [coluna[1] for coluna in cursor.fetchall()]
-
-    if "usuario" not in colunas_motorista:
-        cursor.execute("ALTER TABLE motorista ADD COLUMN usuario TEXT")
     conexao.commit()
-
-    if "senha" not in colunas_motorista:
-        cursor.execute("ALTER TABLE motorista ADD COLUMN senha TEXT")
-        conexao.commit()
-
-        cursor.execute("PRAGMA table_info(rastreamento)")
-        colunas_rastreamento = [coluna[1] for coluna in cursor.fetchall()]
-
-
-    if "destino_latitude" not in colunas_rastreamento:
-     cursor.execute("ALTER TABLE rastreamento ADD COLUMN destino_latitude TEXT")
-     conexao.commit()
-
-    if "destino_longitude" not in colunas_rastreamento:
-      cursor.execute("ALTER TABLE rastreamento ADD COLUMN destino_longitude TEXT")
-    conexao.commit()
-
-
     conexao.close()
 
-@app.route("/cliente/logout")
-def cliente_logout():
-    session.pop("cliente_logado", None)
-    session.pop("cliente_id", None)
-    session.pop("cliente_nome", None)
-    session.pop("cliente_empresa", None)
-    session.pop("cliente_id_ref", None)
-
-    flash("Você saiu da área do cliente.", "sucesso")
-    return redirect(url_for("cliente_login"))
-
-@app.route("/admin/motoristas")
-@login_obrigatorio
-def admin_motoristas():
-    motoristas = Motorista.query.order_by(Motorista.data_criacao.desc()).all()
-    return render_template("admin_motoristas.html", motoristas=motoristas)
-
-
-@app.route("/admin/motoristas/novo", methods=["GET", "POST"])
-@login_obrigatorio
-def novo_motorista():
-    if request.method == "POST":
-        motorista = Motorista(
-            nome=request.form.get("nome", "").strip(),
-            cpf=request.form.get("cpf", "").strip(),
-            cnh=request.form.get("cnh", "").strip(),
-            categoria_cnh=request.form.get("categoria_cnh", "").strip().upper(),
-            validade_cnh=request.form.get("validade_cnh", "").strip(),
-            telefone=request.form.get("telefone", "").strip(),
-            email=request.form.get("email", "").strip().lower(),
-            usuario=request.form.get("usuario", "").strip(),
-            senha=request.form.get("senha", "").strip(),
-            status=request.form.get("status", "Ativo").strip(),
-            observacoes=request.form.get("observacoes", "").strip()
-        )
-
-        if not motorista.nome:
-            flash("Informe o nome do motorista.", "erro")
-            return redirect(url_for("novo_motorista"))
-
-        db.session.add(motorista)
-        db.session.commit()
-
-        flash("Motorista cadastrado com sucesso!", "sucesso")
-        return redirect(url_for("admin_motoristas"))
-
-    return render_template("novo_motorista.html")
-
-
-@app.route("/admin/motoristas/editar/<int:id>", methods=["GET", "POST"])
-@login_obrigatorio
-def editar_motorista(id):
-    motorista = Motorista.query.get_or_404(id)
-
-    if request.method == "POST":
-        motorista.nome = request.form.get("nome", "").strip()
-        motorista.cpf = request.form.get("cpf", "").strip()
-        motorista.cnh = request.form.get("cnh", "").strip()
-        motorista.categoria_cnh = request.form.get("categoria_cnh", "").strip().upper()
-        motorista.validade_cnh = request.form.get("validade_cnh", "").strip()
-        motorista.telefone = request.form.get("telefone", "").strip()
-        motorista.email = request.form.get("email", "").strip().lower()
-        motorista.usuario = request.form.get("usuario", "").strip()
-        motorista.senha = request.form.get("senha", "").strip()
-        motorista.status = request.form.get("status", "Ativo").strip()
-        motorista.observacoes = request.form.get("observacoes", "").strip()
-
-        if not motorista.nome:
-            flash("Informe o nome do motorista.", "erro")
-            return redirect(url_for("editar_motorista", id=id))
-
-        db.session.commit()
-
-        flash("Motorista atualizado com sucesso!", "sucesso")
-        return redirect(url_for("admin_motoristas"))
-
-    return render_template("editar_motorista.html", motorista=motorista)
-
-
-@app.route("/admin/motoristas/excluir/<int:id>", methods=["POST"])
-@login_obrigatorio
-def excluir_motorista(id):
-    motorista = Motorista.query.get_or_404(id)
-
-    db.session.delete(motorista)
-    db.session.commit()
-
-    flash("Motorista excluído com sucesso!", "sucesso")
-    return redirect(url_for("admin_motoristas"))
-
-@app.route("/admin/veiculos")
-@login_obrigatorio
-def admin_veiculos():
-    veiculos = Veiculo.query.order_by(Veiculo.data_criacao.desc()).all()
-    return render_template("admin_veiculos.html", veiculos=veiculos)
-
-
-@app.route("/admin/veiculos/novo", methods=["GET", "POST"])
-@login_obrigatorio
-def novo_veiculo():
-    if request.method == "POST":
-        placa = request.form.get("placa", "").strip().upper()
-
-        if not placa:
-            flash("Informe a placa do veículo.", "erro")
-            return redirect(url_for("novo_veiculo"))
-
-        existente = Veiculo.query.filter_by(placa=placa).first()
-        if existente:
-            flash("Já existe um veículo cadastrado com esta placa.", "erro")
-            return redirect(url_for("novo_veiculo"))
-
-        veiculo = Veiculo(
-            placa=placa,
-            modelo=request.form.get("modelo", "").strip(),
-            marca=request.form.get("marca", "").strip(),
-            tipo=request.form.get("tipo", "").strip(),
-            ano=request.form.get("ano", "").strip(),
-            capacidade=request.form.get("capacidade", "").strip(),
-            status=request.form.get("status", "Disponível").strip(),
-            observacoes=request.form.get("observacoes", "").strip()
-        )
-
-        db.session.add(veiculo)
-        db.session.commit()
-
-        flash("Veículo cadastrado com sucesso!", "sucesso")
-        return redirect(url_for("admin_veiculos"))
-
-    return render_template("novo_veiculo.html")
-
-
-@app.route("/admin/veiculos/editar/<int:id>", methods=["GET", "POST"])
-@login_obrigatorio
-def editar_veiculo(id):
-    veiculo = Veiculo.query.get_or_404(id)
-
-    if request.method == "POST":
-        nova_placa = request.form.get("placa", "").strip().upper()
-
-        duplicado = Veiculo.query.filter(
-            Veiculo.placa == nova_placa,
-            Veiculo.id != veiculo.id
-        ).first()
-
-        if duplicado:
-            flash("Já existe outro veículo com esta placa.", "erro")
-            return redirect(url_for("editar_veiculo", id=id))
-
-        if not nova_placa:
-            flash("Informe a placa do veículo.", "erro")
-            return redirect(url_for("editar_veiculo", id=id))
-
-        veiculo.placa = nova_placa
-        veiculo.modelo = request.form.get("modelo", "").strip()
-        veiculo.marca = request.form.get("marca", "").strip()
-        veiculo.tipo = request.form.get("tipo", "").strip()
-        veiculo.ano = request.form.get("ano", "").strip()
-        veiculo.capacidade = request.form.get("capacidade", "").strip()
-        veiculo.status = request.form.get("status", "Disponível").strip()
-        veiculo.observacoes = request.form.get("observacoes", "").strip()
-
-        db.session.commit()
-
-        flash("Veículo atualizado com sucesso!", "sucesso")
-        return redirect(url_for("admin_veiculos"))
-
-    return render_template("editar_veiculo.html", veiculo=veiculo)
-
-
-@app.route("/admin/veiculos/excluir/<int:id>", methods=["POST"])
-@login_obrigatorio
-def excluir_veiculo(id):
-    veiculo = Veiculo.query.get_or_404(id)
-
-    db.session.delete(veiculo)
-    db.session.commit()
-
-    flash("Veículo excluído com sucesso!", "sucesso")
-    return redirect(url_for("admin_veiculos"))
-
-from math import radians, sin, cos, sqrt, atan2
-from datetime import timedelta
-
-def calcular_distancia_km(lat1, lon1, lat2, lon2):
-    raio_terra_km = 6371
-
-    lat1 = radians(float(lat1))
-    lon1 = radians(float(lon1))
-    lat2 = radians(float(lat2))
-    lon2 = radians(float(lon2))
-
-    dlat = lat2 - lat1
-    dlon = lon2 - lon1
-
-    a = sin(dlat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(dlon / 2) ** 2
-    c = 2 * atan2(sqrt(a), sqrt(1 - a))
-
-    return raio_terra_km * c
-
-
-def calcular_eta(carga, velocidade_media_kmh=60):
-    ultima_localizacao = LocalizacaoMotorista.query.filter_by(
-        rastreamento_id=carga.id
-    ).order_by(LocalizacaoMotorista.data_registro.desc()).first()
-
-    if not ultima_localizacao:
-        return None, None
-
-    if not carga.destino_latitude or not carga.destino_longitude:
-        return None, None
-
-    distancia_km = calcular_distancia_km(
-        ultima_localizacao.latitude,
-        ultima_localizacao.longitude,
-        carga.destino_latitude,
-        carga.destino_longitude
-    )
-
-    horas = distancia_km / velocidade_media_kmh
-    eta = datetime.utcnow() + timedelta(hours=horas)
-
-    return distancia_km, eta
-
-@app.route("/admin/rotas")
-@login_obrigatorio
-def admin_rotas():
-    rotas = Rota.query.filter_by(status="Ativa").order_by(Rota.nome.asc()).all()
-    rotas = Rota.query.order_by(Rota.data_criacao.desc()).all()
-    return render_template("admin_rotas.html", rotas=rotas )
-
-def registrar_log(acao, detalhes=""):
-    usuario_id = session.get("usuario_sistema_id")
-    usuario_nome = session.get("usuario_sistema_nome")
-
+def registrar_log(
+    acao,
+    detalhes="",
+    modulo=None,
+    entidade=None,
+    entidade_id=None,
+    antes=None,
+    depois=None,
+    usuario_id=None,
+    usuario_nome=None,
+    perfil=None
+):
     log = LogAcao(
         usuario_id=usuario_id,
         usuario_nome=usuario_nome,
+        perfil=perfil,
+        modulo=modulo,
         acao=acao,
-        detalhes=detalhes
+        entidade=entidade,
+        entidade_id=entidade_id,
+        detalhes=detalhes,
+        antes=json.dumps(
+            antes,
+            ensure_ascii=False,
+            default=str
+        ) if antes is not None else None,
+        depois=json.dumps(
+            depois,
+            ensure_ascii=False,
+            default=str
+        ) if depois is not None else None
     )
 
     db.session.add(log)
     db.session.commit()
 
-@app.route("/admin/rotas/nova", methods=["GET", "POST"])
-@login_obrigatorio
-def nova_rota():
-    if request.method == "POST": 
-        nome = request.form.get("nome", "").strip()
-        origem = request.form.get("origem", "").strip()
-        destino = request.form.get("destino", "").strip()
+def registrar_historico(
+    viagem_id,
+    tipo,
+    descricao
+):
+    historico = HistoricoViagem(
+        viagem_id=viagem_id,
+        status=tipo,
+        observacao=descricao
+    )
 
-        if not all([nome, origem, destino]):
-            flash("Informe nome, origem e destino da rota.", "erro")
-            return redirect(url_for("nova_rota"))
+    db.session.add(historico)
+    
 
-        rota = Rota(
-            nome=nome,
-            origem=origem,
-            destino=destino,
-            distancia=request.form.get("distancia", "").strip(),
-            previsao_tempo=request.form.get("previsao_tempo", "").strip(),
-            pedagio_estimado=request.form.get("pedagio_estimado", "").strip(),
-            observacoes=request.form.get("observacoes", "").strip(),
-            status=request.form.get("status", "Ativa").strip()
+STATUS_VIAGEM_ATIVOS_RECURSOS = [
+    "Em andamento",
+    "Em coleta",
+    "Carregando",
+    "Em trânsito",
+    "Parada operacional",
+    "Saiu para entrega"
+]
+
+STATUS_CARGA_ATIVOS_RECURSOS = [
+    "Em andamento",
+    "Em coleta",
+    "Carregando",
+    "Em trânsito",
+    "Parada operacional",
+    "Saiu para entrega"
+]
+
+
+def motorista_possui_outra_viagem_ativa(
+    motorista_id,
+    excluir_viagem_id=None
+):
+    consulta = Viagem.query.filter(
+        Viagem.motorista_id == motorista_id,
+        Viagem.status.in_(STATUS_VIAGEM_ATIVOS_RECURSOS)
+    )
+
+    if excluir_viagem_id is not None:
+        consulta = consulta.filter(
+            Viagem.id != excluir_viagem_id
         )
 
-        db.session.add(rota)
-        db.session.commit()
-
-        flash("Rota cadastrada com sucesso!", "sucesso")
-        return redirect(url_for("admin_rotas"))
-
-    return render_template("nova_rota.html")
+    return consulta.first() is not None
 
 
-@app.route("/admin/rotas/editar/<int:id>", methods=["GET", "POST"])
-@login_obrigatorio
-def editar_rota(id):
-    rota = Rota.query.get_or_404(id)
+def motorista_possui_outra_carga_ativa(
+    motorista_id,
+    excluir_carga_id=None
+):
+    consulta = Rastreamento.query.filter(
+        Rastreamento.motorista_id == motorista_id,
+        Rastreamento.status.in_(STATUS_CARGA_ATIVOS_RECURSOS)
+    )
 
-    if request.method == "POST":
-        rota.nome = request.form.get("nome", "").strip()
-        rota.origem = request.form.get("origem", "").strip()
-        rota.destino = request.form.get("destino", "").strip()
-        rota.distancia = request.form.get("distancia", "").strip()
-        rota.previsao_tempo = request.form.get("previsao_tempo", "").strip()
-        rota.pedagio_estimado = request.form.get("pedagio_estimado", "").strip()
-        rota.observacoes = request.form.get("observacoes", "").strip()
-        rota.status = request.form.get("status", "Ativa").strip()
-
-        if not all([rota.nome, rota.origem, rota.destino]):
-            flash("Informe nome, origem e destino da rota.", "erro")
-            return redirect(url_for("editar_rota", id=id))
-
-        db.session.commit()
-
-        flash("Rota atualizada com sucesso!", "sucesso")
-        return redirect(url_for("admin_rotas"))
-
-    return render_template("editar_rota.html", rota=rota)
-
-
-@app.route("/admin/rotas/excluir/<int:id>", methods=["POST"])
-@login_obrigatorio
-def excluir_rota(id):
-    rota = Rota.query.get_or_404(id)
-
-    db.session.delete(rota)
-    db.session.commit()
-
-    flash("Rota excluída com sucesso!", "sucesso")
-    return redirect(url_for("admin_rotas"))
-
-@app.route("/admin/novo_rastreamento", methods=["GET", "POST"])
-@login_obrigatorio
-def novo_rastreamento():
-    clientes = Cliente.query.filter_by(ativo=True).order_by(Cliente.razao_social.asc()).all()
-    motoristas = Motorista.query.filter_by(status="Ativo").order_by(Motorista.nome.asc()).all()
-    veiculos = Veiculo.query.order_by(Veiculo.placa.asc()).all()
-    rotas = Rota.query.filter_by(status="Ativa").order_by(Rota.nome.asc()).all()
-    if request.method == "POST":
-        codigo = request.form.get("codigo", "").strip().upper()
-        cliente_id = request.form.get("cliente_id", "").strip()
-        motorista_id = request.form.get("motorista_id", "").strip()
-        veiculo_id = request.form.get("veiculo_id", "").strip()
-        rota_id = request.form.get("rota_id", "").strip()
-        status = request.form.get("status", "").strip()
-        local_atual = request.form.get("local_atual", "").strip()
-        destino = request.form.get("destino", "").strip()
-        previsao_entrega_str = request.form.get("previsao_entrega", "").strip()
-        destino_latitude = request.form.get("destino_latitude", "").strip()
-        destino_longitude = request.form.get("destino_longitude", "").strip()
-        previsao_entrega = None
-        if previsao_entrega_str:
-            previsao_entrega = datetime.strptime(previsao_entrega_str, "%Y-%m-%dT%H:%M")
-
-        if not all([codigo, cliente_id, status, local_atual, destino]):
-            flash("Preencha os campos obrigatórios do rastreamento.", "erro")
-            return redirect(url_for("novo_rastreamento"))
-
-        cliente_obj = Cliente.query.get(cliente_id)
-
-        if not cliente_obj:
-            flash("Cliente não encontrado.", "erro")
-            return redirect(url_for("novo_rastreamento"))
-
-        existente = Rastreamento.query.filter_by(codigo=codigo).first()
-        if existente:
-            flash("Já existe um rastreamento com esse código.", "erro")
-            return redirect(url_for("novo_rastreamento"))
-
-        nova_carga = Rastreamento(
-            codigo=codigo,
-            cliente_id=cliente_obj.id,
-            cliente=cliente_obj.razao_social,
-            motorista_id=int(motorista_id) if motorista_id else None,
-            veiculo_id=int(veiculo_id) if veiculo_id else None,
-            rota_id=int(rota_id) if rota_id else None,
-            destino_latitude=destino_latitude,
-            destino_longitude=destino_longitude,    
-            previsao_entrega=previsao_entrega,
-            status=status,
-            local_atual=local_atual,
-            destino=destino,
-            ultima_atualizacao=datetime.utcnow()
+    if excluir_carga_id is not None:
+        consulta = consulta.filter(
+            Rastreamento.id != excluir_carga_id
         )
 
-        db.session.add(nova_carga)
-        db.session.commit()
+    return consulta.first() is not None
 
-        historico = HistoricoRastreamento(
-            rastreamento_id=nova_carga.id,
-            status=nova_carga.status,
-            local=nova_carga.local_atual,
-            observacao="Carga cadastrada no sistema"
+
+def veiculo_possui_outra_viagem_ativa(
+    veiculo_id,
+    excluir_viagem_id=None
+):
+    consulta = Viagem.query.filter(
+        Viagem.veiculo_id == veiculo_id,
+        Viagem.status.in_(STATUS_VIAGEM_ATIVOS_RECURSOS)
+    )
+
+    if excluir_viagem_id is not None:
+        consulta = consulta.filter(
+            Viagem.id != excluir_viagem_id
         )
 
-        db.session.add(historico)
-        db.session.commit()
+    return consulta.first() is not None
 
-        registrar_log(
-    "Cadastro de rastreamento",
-    f"Carga {nova_carga.codigo} cadastrada para o cliente {nova_carga.cliente}."
-)
 
-        flash("Rastreamento cadastrado com sucesso!", "sucesso")
-        return redirect(url_for("admin_rastreamento"))
-
-    return render_template(
-        "novo_rastreamento.html",
-        clientes=clientes,
-        motoristas=motoristas,
-        veiculos=veiculos,
-        rotas=rotas
+def veiculo_possui_outra_carga_ativa(
+    veiculo_id,
+    excluir_carga_id=None
+):
+    consulta = Rastreamento.query.filter(
+        Rastreamento.veiculo_id == veiculo_id,
+        Rastreamento.status.in_(STATUS_CARGA_ATIVOS_RECURSOS)
     )
 
-@app.route("/admin/logs")
-@login_obrigatorio
-def admin_logs():
-    logs = LogAcao.query.order_by(LogAcao.data_acao.desc()).limit(200).all()
-    return render_template("admin_logs.html", logs=logs)
-
-@app.route("/admin/relatorios", methods=["GET", "POST"])
-@login_obrigatorio
-def admin_relatorios():
-    clientes = Cliente.query.order_by(Cliente.razao_social.asc()).all()
-    motoristas = Motorista.query.order_by(Motorista.nome.asc()).all()
-
-    cargas = []
-    total = 0
-    entregues = 0
-    em_transito = 0
-    atrasadas = 0
-
-    if request.method == "POST":
-        data_inicio = request.form.get("data_inicio", "").strip()
-        data_fim = request.form.get("data_fim", "").strip()
-        cliente_id = request.form.get("cliente_id", "").strip()
-        motorista_id = request.form.get("motorista_id", "").strip()
-        status = request.form.get("status", "").strip()
-
-        consulta = Rastreamento.query
-
-        if data_inicio:
-            inicio = datetime.strptime(data_inicio, "%Y-%m-%d")
-            consulta = consulta.filter(Rastreamento.ultima_atualizacao >= inicio)
-
-        if data_fim:
-            fim = datetime.strptime(data_fim, "%Y-%m-%d")
-            fim = fim.replace(hour=23, minute=59, second=59)
-            consulta = consulta.filter(Rastreamento.ultima_atualizacao <= fim)
-
-        if cliente_id:
-            consulta = consulta.filter(Rastreamento.cliente_id == int(cliente_id))
-
-        if motorista_id:
-            consulta = consulta.filter(Rastreamento.motorista_id == int(motorista_id))
-
-        if status:
-            consulta = consulta.filter(Rastreamento.status == status)
-
-        cargas = consulta.order_by(Rastreamento.ultima_atualizacao.desc()).all()
-
-        total = len(cargas)
-        entregues = len([c for c in cargas if c.status == "Entregue"])
-        em_transito = len([c for c in cargas if c.status == "Em trânsito"])
-
-        agora = datetime.utcnow()
-        atrasadas = len([
-            c for c in cargas
-            if c.previsao_entrega and c.previsao_entrega < agora and c.status != "Entregue"
-        ])
-
-    return render_template(
-        "admin_relatorios.html",
-        clientes=clientes,
-        motoristas=motoristas,
-        cargas=cargas,
-        total=total,
-        entregues=entregues,
-        em_transito=em_transito,
-        atrasadas=atrasadas
-    )
-
-@app.route("/admin/mapa/<int:id>")
-@login_obrigatorio
-def admin_mapa_carga(id):
-    carga = Rastreamento.query.get_or_404(id)
-
-    localizacoes = LocalizacaoMotorista.query.filter_by(
-        rastreamento_id=id
-    ).order_by(LocalizacaoMotorista.data_registro.desc()).all()
-
-    return render_template(
-        "admin_mapa_carga.html",
-        carga=carga,
-        localizacoes=localizacoes
-    )
-
-@app.route("/motorista/login", methods=["GET", "POST"])
-def motorista_login():
-    if request.method == "POST":
-        usuario = request.form.get("usuario", "").strip()
-        senha = request.form.get("senha", "").strip()
-
-        motorista = Motorista.query.filter_by(
-            usuario=usuario,
-            senha=senha,
-            status="Ativo"
-        ).first()
-
-        if motorista:
-            session["motorista_logado"] = True
-            session["motorista_id"] = motorista.id
-            session["motorista_nome"] = motorista.nome
-
-            flash("Login do motorista realizado com sucesso!", "sucesso")
-            return redirect(url_for("motorista_painel"))
-
-        flash("Usuário ou senha inválidos.", "erro")
-
-    return render_template("motorista_login.html")
-
-
-@app.route("/motorista/logout")
-def motorista_logout():
-    session.pop("motorista_logado", None)
-    session.pop("motorista_id", None)
-    session.pop("motorista_nome", None)
-
-    flash("Você saiu da área do motorista.", "sucesso")
-    return redirect(url_for("motorista_login"))
-
-
-@app.route("/motorista/painel")
-@motorista_login_obrigatorio
-def motorista_painel():
-    motorista_id = session.get("motorista_id")
-
-    cargas = Rastreamento.query.filter_by(
-        motorista_id=motorista_id
-    ).order_by(Rastreamento.ultima_atualizacao.desc()).all()
-
-    total = len(cargas)
-    em_transito = len([c for c in cargas if c.status == "Em trânsito"])
-    entregues = len([c for c in cargas if c.status == "Entregue"])
-    ocorrencias = OcorrenciaEntrega.query.join(Rastreamento).filter(
-        Rastreamento.motorista_id == motorista_id
-    ).count()
-
-    return render_template(
-        "motorista_painel.html",
-        cargas=cargas,
-        total=total,
-        em_transito=em_transito,
-        entregues=entregues,
-        ocorrencias=ocorrencias
-    )
-
-@app.route("/motorista/carga/<int:id>", methods=["GET", "POST"])
-@motorista_login_obrigatorio
-def motorista_carga_detalhe(id):
-    carga = Rastreamento.query.get_or_404(id)
-
-    if carga.motorista_id != session.get("motorista_id"):
-        flash("Acesso não autorizado.", "erro")
-        return redirect(url_for("motorista_painel"))
-
-    if request.method == "POST":
-        novo_status = request.form.get("status", "").strip()
-        local_atual = request.form.get("local_atual", "").strip()
-        observacao = request.form.get("observacao", "").strip()
-
-        if not novo_status or not local_atual:
-            flash("Informe status e local atual.", "erro")
-            return redirect(url_for("motorista_carga_detalhe", id=id))
-
-        carga.status = novo_status
-        carga.local_atual = local_atual
-        carga.ultima_atualizacao = datetime.utcnow()
-
-        historico = HistoricoRastreamento(
-            rastreamento_id=carga.id,
-            status=carga.status,
-            local=carga.local_atual,
-            observacao=observacao or "Atualização feita pelo motorista"
+    if excluir_carga_id is not None:
+        consulta = consulta.filter(
+            Rastreamento.id != excluir_carga_id
         )
 
-        db.session.add(historico)
-        db.session.commit()
+    return consulta.first() is not None
 
-        flash("Carga atualizada com sucesso!", "sucesso")
-        return redirect(url_for("motorista_painel"))
 
-    historico = HistoricoRastreamento.query.filter_by(
-        rastreamento_id=id
-    ).order_by(HistoricoRastreamento.data_evento.desc()).all()
+def recalcular_disponibilidade_motorista(
+    motorista,
+    excluir_viagem_id=None,
+    excluir_carga_id=None
+):
+    if not motorista:
+        return
 
-    localizacoes = LocalizacaoMotorista.query.filter_by(
-    rastreamento_id=id
-    ).order_by(LocalizacaoMotorista.data_registro.desc()).all()
-
-    return render_template(
-        "motorista_carga_detalhe.html",
-        carga=carga,
-        historico=historico,
-        localizacoes=localizacoes
+    possui_operacao_ativa = (
+        motorista_possui_outra_viagem_ativa(
+            motorista.id,
+            excluir_viagem_id
+        )
+        or motorista_possui_outra_carga_ativa(
+            motorista.id,
+            excluir_carga_id
+        )
     )
 
+    motorista.disponibilidade = (
+        "Em viagem"
+        if possui_operacao_ativa
+        else "Disponível"
+    )
+
+
+def veiculo_possui_status_especial(veiculo):
+    status = str(veiculo.status or "").strip().lower()
+
+    return status in [
+        "inativo",
+        "manutenção",
+        "em manutenção"
+    ]
+
+
+def recalcular_status_veiculo(
+    veiculo,
+    excluir_viagem_id=None,
+    excluir_carga_id=None
+):
+    if not veiculo or veiculo_possui_status_especial(veiculo):
+        return
+
+    possui_operacao_ativa = (
+        veiculo_possui_outra_viagem_ativa(
+            veiculo.id,
+            excluir_viagem_id
+        )
+        or veiculo_possui_outra_carga_ativa(
+            veiculo.id,
+            excluir_carga_id
+        )
+    )
+
+    veiculo.status = (
+        "Em viagem"
+        if possui_operacao_ativa
+        else "Disponível"
+    )
+
+    
 def adicionar_colunas_operacionais():
     import sqlite3
 
     conexao = sqlite3.connect(db_path)
     cursor = conexao.cursor()
 
-    # TABELA RASTREAMENTO
-    cursor.execute("PRAGMA table_info(rastreamento)")
-    colunas_rastreamento = [coluna[1] for coluna in cursor.fetchall()]
+    try:
+        # ==========================
+        # TABELA RASTREAMENTO
+        # ==========================
+        cursor.execute("PRAGMA table_info(rastreamento)")
+        colunas_rastreamento = [
+            coluna[1] for coluna in cursor.fetchall()
+        ]
 
-    if "cliente_id" not in colunas_rastreamento:
-        cursor.execute("ALTER TABLE rastreamento ADD COLUMN cliente_id INTEGER")
+        if "cliente_id" not in colunas_rastreamento:
+            cursor.execute(
+                "ALTER TABLE rastreamento "
+                "ADD COLUMN cliente_id INTEGER"
+            )
+
+        if "motorista_id" not in colunas_rastreamento:
+            cursor.execute(
+                "ALTER TABLE rastreamento "
+                "ADD COLUMN motorista_id INTEGER"
+            )
+
+        if "veiculo_id" not in colunas_rastreamento:
+            cursor.execute(
+                "ALTER TABLE rastreamento "
+                "ADD COLUMN veiculo_id INTEGER"
+            )
+
+        if "rota_id" not in colunas_rastreamento:
+            cursor.execute(
+                "ALTER TABLE rastreamento "
+                "ADD COLUMN rota_id INTEGER"
+            )
+
+        if "previsao_entrega" not in colunas_rastreamento:
+            cursor.execute(
+                "ALTER TABLE rastreamento "
+                "ADD COLUMN previsao_entrega DATETIME"
+            )
+
+        if "destino_latitude" not in colunas_rastreamento:
+            cursor.execute(
+                "ALTER TABLE rastreamento "
+                "ADD COLUMN destino_latitude TEXT"
+            )
+
+        if "destino_longitude" not in colunas_rastreamento:
+            cursor.execute(
+                "ALTER TABLE rastreamento "
+                "ADD COLUMN destino_longitude TEXT"
+            )
+
+        if "valor_frete" not in colunas_rastreamento:
+            cursor.execute(
+                "ALTER TABLE rastreamento "
+                "ADD COLUMN valor_frete REAL DEFAULT 0"
+            )
+
+        if "status_pagamento" not in colunas_rastreamento:
+            cursor.execute(
+                "ALTER TABLE rastreamento "
+                "ADD COLUMN status_pagamento TEXT "
+                "DEFAULT 'Pendente'"
+            )
+
+        # ==========================
+        # TABELA CLIENTE_USUARIO
+        # ==========================
+        cursor.execute("PRAGMA table_info(cliente_usuario)")
+        colunas_cliente_usuario = [
+            coluna[1] for coluna in cursor.fetchall()
+        ]
+
+        if "cliente_id" not in colunas_cliente_usuario:
+            cursor.execute(
+                "ALTER TABLE cliente_usuario "
+                "ADD COLUMN cliente_id INTEGER"
+            )
+
+        # ==========================
+        # TABELA MOTORISTA
+        # ==========================
+        cursor.execute("PRAGMA table_info(motorista)")
+        colunas_motorista = [
+            coluna[1] for coluna in cursor.fetchall()
+        ]
+
+        if "usuario" not in colunas_motorista:
+            cursor.execute(
+                "ALTER TABLE motorista "
+                "ADD COLUMN usuario TEXT"
+            )
+
+        if "senha" not in colunas_motorista:
+            cursor.execute(
+                "ALTER TABLE motorista "
+                "ADD COLUMN senha TEXT"
+            )
+
+        # ==========================
+        # TABELA CARGA
+        # ==========================
+        cursor.execute("PRAGMA table_info(carga)")
+        colunas_carga = [
+            coluna[1] for coluna in cursor.fetchall()
+        ]
+
+        if "motorista_id" not in colunas_carga:
+            cursor.execute(
+                "ALTER TABLE carga "
+                "ADD COLUMN motorista_id INTEGER"
+            )
+
+        # ==========================
+        # TABELA VIAGEM
+        # ==========================
+        cursor.execute("PRAGMA table_info(viagem)")
+        colunas_viagem = [
+            coluna[1] for coluna in cursor.fetchall()
+        ]
+
+        if "codigo" not in colunas_viagem:
+            cursor.execute(
+                "ALTER TABLE viagem "
+                "ADD COLUMN codigo TEXT"
+            )
+
         conexao.commit()
 
-    if "motorista_id" not in colunas_rastreamento:
-        cursor.execute("ALTER TABLE rastreamento ADD COLUMN motorista_id INTEGER")
-        conexao.commit()
+    except sqlite3.Error as erro:
+        conexao.rollback()
 
-    if "veiculo_id" not in colunas_rastreamento:
-        cursor.execute("ALTER TABLE rastreamento ADD COLUMN veiculo_id INTEGER")
-        conexao.commit()
+        print(
+            f"Erro ao atualizar colunas operacionais: {erro}"
+        )
 
-    if "rota_id" not in colunas_rastreamento:
-        cursor.execute("ALTER TABLE rastreamento ADD COLUMN rota_id INTEGER")
-        conexao.commit()
+        raise
 
-    if "previsao_entrega" not in colunas_rastreamento:
-        cursor.execute("ALTER TABLE rastreamento ADD COLUMN previsao_entrega DATETIME")
-        conexao.commit()
-
-    if "destino_latitude" not in colunas_rastreamento:
-        cursor.execute("ALTER TABLE rastreamento ADD COLUMN destino_latitude TEXT")
-        conexao.commit()
-
-    if "destino_longitude" not in colunas_rastreamento:
-        cursor.execute("ALTER TABLE rastreamento ADD COLUMN destino_longitude TEXT")
-        conexao.commit()
-
-    # TABELA CLIENTE_USUARIO
-    cursor.execute("PRAGMA table_info(cliente_usuario)")
-    colunas_cliente_usuario = [coluna[1] for coluna in cursor.fetchall()]
-
-    if "cliente_id" not in colunas_cliente_usuario:
-        cursor.execute("ALTER TABLE cliente_usuario ADD COLUMN cliente_id INTEGER")
-        conexao.commit()
-
-    # TABELA MOTORISTA
-    cursor.execute("PRAGMA table_info(motorista)")
-    colunas_motorista = [coluna[1] for coluna in cursor.fetchall()]
-
-    if "usuario" not in colunas_motorista:
-        cursor.execute("ALTER TABLE motorista ADD COLUMN usuario TEXT")
-        conexao.commit()
-
-    if "senha" not in colunas_motorista:
-        cursor.execute("ALTER TABLE motorista ADD COLUMN senha TEXT")
-        conexao.commit()
-
-    conexao.close()
-
-@app.route("/motorista/localizacao/<int:id>", methods=["POST"])
-@motorista_login_obrigatorio
-def salvar_localizacao(id):
-    dados = request.get_json()
-
-    latitude = dados.get("latitude")
-    longitude = dados.get("longitude")
-
-    motorista_id = session.get("motorista_id")
-
-    local = LocalizacaoMotorista(
-        motorista_id=motorista_id,
-        rastreamento_id=id,
-        latitude=latitude,
-        longitude=longitude
-    )
-
-    db.session.add(local)
-    db.session.commit()
-
-    return {"status": "ok"}
-
-@app.route("/admin/carga/<int:id>")
-@login_obrigatorio
-def admin_carga_detalhe(id):
-    carga = Rastreamento.query.get_or_404(id)
-
-    historico = HistoricoRastreamento.query.filter_by(
-        rastreamento_id=id
-    ).order_by(HistoricoRastreamento.data_evento.desc()).all()
-
-    comprovantes = ComprovanteEntrega.query.filter_by(
-        rastreamento_id=id
-    ).order_by(ComprovanteEntrega.data_upload.desc()).all()
-
-    ocorrencias = OcorrenciaEntrega.query.filter_by(
-        rastreamento_id=id
-    ).order_by(OcorrenciaEntrega.data_ocorrencia.desc()).all()
-
-    localizacoes = LocalizacaoMotorista.query.filter_by(
-        rastreamento_id=id
-    ).order_by(LocalizacaoMotorista.data_registro.desc()).all()
-
-    distancia_restante, eta_estimado = calcular_eta(carga)
-
-    return render_template(
-        "admin_carga_detalhe.html",
-        carga=carga,
-        historico=historico,
-        comprovantes=comprovantes,
-        ocorrencias=ocorrencias,
-        localizacoes=localizacoes,
-        distancia_restante=distancia_restante,
-        eta_estimado=eta_estimado,
-        now=datetime.utcnow()
-    )
+    finally:
+        conexao.close()
 
 with app.app_context():
     db.create_all()
-    adicionar_colunas_operacionais()
 
-    admin_padrao = UsuarioSistema.query.filter_by(usuario="admin").first()
+    adicionar_colunas_operacionais()
+    adicionar_colunas_auditoria()
+
+    admin_padrao = UsuarioSistema.query.filter_by(
+        usuario="admin"
+    ).first()
 
     if not admin_padrao:
         admin_padrao = UsuarioSistema(
@@ -1580,13 +1242,8 @@ with app.app_context():
         db.session.add(admin_padrao)
         db.session.commit()
 
-
-@app.route("/api/teste")
-def api_teste():
-    return {"mensagem": "API Flask conectada com sucesso!"}
-
 @app.route("/api/cotacoes", methods=["POST"])
-def api_criar_cotacao():
+def api_criar_cotacao_publica():
     dados = request.get_json()
 
     cliente = dados.get("cliente", "").strip()
@@ -1627,7 +1284,7 @@ def api_buscar_rastreamento(codigo):
 
     ultima_atualizacao = ""
     if carga.ultima_atualizacao:
-        ultima_atualizacao = carga.ultima_atualizacao.strftime("%d/%m/%Y %H:%M")
+        ultima_atualizacao = formatar_data_brasilia(carga.ultima_atualizacao)
 
     return {
         "id": carga.id,
@@ -1637,50 +1294,6 @@ def api_buscar_rastreamento(codigo):
         "local_atual": carga.local_atual,
         "destino": carga.destino,
         "ultima_atualizacao": ultima_atualizacao
-    }, 200
-    
-@app.route("/api/dev/criar-rastreamento", methods=["POST"])
-def api_dev_criar_rastreamento():
-    nova_carga = Rastreamento(
-        codigo="RAM001",
-        cliente="Cliente Teste React",
-        status="Em trânsito",
-        local_atual="São José do Rio Preto/SP",
-        destino="Goiânia/GO",
-        ultima_atualizacao=datetime.utcnow()
-    )
-
-    db.session.add(nova_carga)
-    db.session.commit()
-
-    return {"mensagem": "Rastreamento RAM001 criado com sucesso."
-    }, 201
-    
-@app.route("/api/login", methods=["POST"])
-def api_login():
-    dados = request.get_json()
-
-    usuario = dados.get("usuario", "").strip()
-    senha = dados.get("senha", "").strip()
-
-    usuario_sistema = UsuarioSistema.query.filter_by(
-        usuario=usuario,
-        senha=senha,
-        ativo=True
-    ).first()
-
-    if not usuario_sistema:
-        return {
-            "erro": "Usuário ou senha inválidos."
-        }, 401
-
-    return {
-        "mensagem": "Login realizado com sucesso!",
-        "usuario": {
-            "id": usuario_sistema.id,
-            "nome": usuario_sistema.nome,
-            "perfil": usuario_sistema.perfil
-        }
     }, 200
     
 @app.route("/api/admin/resumo", methods=["GET"])
@@ -1711,7 +1324,28 @@ def api_admin_resumo():
     }
     
 @app.route("/api/admin/cargas", methods=["GET"])
+@jwt_required()
 def api_admin_cargas():
+    usuario_id = int(get_jwt_identity())
+
+    usuario = db.session.get(
+        UsuarioSistema,
+        usuario_id
+    )
+
+    if not usuario or not usuario.ativo:
+        return jsonify({
+            "erro": "Usuário não autorizado."
+        }), 401
+
+    if str(usuario.perfil).strip().lower() not in [
+        "administrador",
+        "operador"
+    ]:
+        return jsonify({
+            "erro": "Você não possui permissão para acessar cargas."
+        }), 403
+
     cargas = Rastreamento.query.order_by(
         Rastreamento.ultima_atualizacao.desc()
     ).all()
@@ -1725,31 +1359,102 @@ def api_admin_cargas():
             "cliente": carga.cliente,
             "status": carga.status,
             "local_atual": carga.local_atual,
-            "destino": carga.destino
+            "destino": carga.destino,
+            "motorista": carga.motorista_relacao.nome if carga.motorista_relacao else "",
+            "veiculo": carga.veiculo_relacao.placa if carga.veiculo_relacao else "",
         })
 
     return lista
 
-@app.route("/api/carga/<int:id>", methods=["GET"])
-def api_carga_detalhe(id):
-    carga = Rastreamento.query.get_or_404(id)
+@app.route("/api/admin/cargas/<int:id>", methods=["GET"])
+@jwt_required()
+def api_admin_carga_detalhe(id):
+    usuario_id = int(get_jwt_identity())
 
-    ultima_atualizacao = ""
-    if carga.ultima_atualizacao:
-        ultima_atualizacao = carga.ultima_atualizacao.strftime("%d/%m/%Y %H:%M")
+    usuario = db.session.get(
+        UsuarioSistema,
+        usuario_id
+    )
 
-    return {
+    if not usuario or not usuario.ativo:
+        return jsonify({
+            "erro": "Usuário não autorizado."
+        }), 401
+
+    if str(usuario.perfil).strip().lower() not in [
+        "administrador",
+        "operador"
+    ]:
+        return jsonify({
+            "erro": "Você não possui permissão para acessar cargas."
+        }), 403
+
+    carga = db.session.get(
+        Rastreamento,
+        id
+    )
+
+    if not carga:
+        return jsonify({
+            "erro": "Carga não encontrada."
+        }), 404
+
+    viagem = Viagem.query.filter_by(
+        rastreamento_id=carga.id
+    ).first()
+
+    return jsonify({
         "id": carga.id,
         "codigo": carga.codigo,
         "cliente": carga.cliente,
-        "status": carga.status,
         "local_atual": carga.local_atual,
         "destino": carga.destino,
-        "ultima_atualizacao": ultima_atualizacao
-    }
+        "motorista_id": carga.motorista_id,
+        "motorista": (
+            carga.motorista_relacao.nome
+            if carga.motorista_relacao
+            else ""
+        ),
+        "veiculo_id": carga.veiculo_id,
+        "veiculo": (
+            carga.veiculo_relacao.placa
+            if carga.veiculo_relacao
+            else ""
+        ),
+        "status": carga.status,
+        "ultima_atualizacao": (
+            carga.ultima_atualizacao.strftime("%d/%m/%Y %H:%M")
+            if carga.ultima_atualizacao
+            else ""
+        ),
+        "valor_frete": carga.valor_frete,
+        "status_pagamento": carga.status_pagamento,
+        "viagem_id": viagem.id if viagem else None,
+    }), 200
     
 @app.route("/api/admin/cargas", methods=["POST"])
+@jwt_required()
 def api_criar_carga():
+    usuario_id = int(get_jwt_identity())
+
+    usuario = db.session.get(
+        UsuarioSistema,
+        usuario_id
+    )
+
+    if not usuario or not usuario.ativo:
+        return jsonify({
+            "erro": "Usuário não autorizado."
+        }), 401
+
+    if str(usuario.perfil).strip().lower() not in [
+        "administrador",
+        "operador"
+    ]:
+        return jsonify({
+            "erro": "Você não possui permissão para criar cargas."
+        }), 403
+
     dados = request.get_json()
 
     codigo = dados.get("codigo", "").strip().upper()
@@ -1766,16 +1471,29 @@ def api_criar_carga():
     if existente:
         return {"erro": "Já existe uma carga com esse código."}, 400
 
-    nova_carga = Rastreamento(
-        codigo=codigo,
-        cliente=cliente,
-        status=status,
-        local_atual=local_atual,
-        destino=destino,
-        ultima_atualizacao=datetime.utcnow()
-    )
+    nova_carga = Rastreamento()
+    nova_carga.codigo = codigo
+    nova_carga.cliente = cliente
+    nova_carga.status = status
+    nova_carga.local_atual = local_atual
+    nova_carga.destino = destino
+    nova_carga.ultima_atualizacao = datetime.utcnow()
+    nova_carga.valor_frete = converter_valor_brasileiro(
+    dados.get("valor_frete")
+)
+    nova_carga.status_pagamento = dados.get("status_pagamento", "Pendente")
 
     db.session.add(nova_carga)
+    db.session.flush()
+    
+    primeiro_evento = HistoricoRastreamento(
+    rastreamento_id=nova_carga.id,
+    status=nova_carga.status or "Carga criada",
+    local=nova_carga.local_atual or "Origem não informada",
+    observacao="Carga cadastrada no sistema."
+    )
+
+    db.session.add(primeiro_evento)
     db.session.commit()
 
     return {
@@ -1783,5 +1501,5820 @@ def api_criar_carga():
         "id": nova_carga.id
     }, 201
     
+@app.route("/api/admin/cargas/<int:id>", methods=["PUT"])
+@jwt_required()
+def api_editar_carga(id):
+    usuario_id = int(get_jwt_identity())
+
+    usuario = db.session.get(
+        UsuarioSistema,
+        usuario_id
+    )
+
+    if not usuario or not usuario.ativo:
+        return jsonify({
+            "erro": "Usuário não autorizado."
+        }), 401
+
+    if str(usuario.perfil).strip().lower() not in [
+        "administrador",
+        "operador"
+    ]:
+        return jsonify({
+            "erro": "Você não possui permissão para editar cargas."
+        }), 403
+
+    carga = Rastreamento.query.get_or_404(id)
+    dados = request.get_json() or {}
+
+    # Guarda os dados anteriores antes de alterar
+    local_anterior = carga.local_atual
+
+    carga.codigo = dados.get("codigo", "").strip().upper()
+    carga.cliente = dados.get("cliente", "").strip()
+    carga.local_atual = dados.get("local_atual", "").strip()
+    carga.destino = dados.get("destino", "").strip()
+    carga.ultima_atualizacao = datetime.utcnow()
+
+    if not all([
+        carga.codigo,
+        carga.cliente,
+        carga.local_atual,
+        carga.destino,
+    ]):
+        return {
+            "erro": "Preencha todos os campos obrigatórios."
+        }, 400
+
+    carga.valor_frete = converter_valor_brasileiro(
+        dados.get("valor_frete")
+    )
+
+    carga.status_pagamento = dados.get(
+        "status_pagamento",
+        "Pendente"
+    )
+
+    # Descobre se houve alteração relevante para a timeline
+    local_mudou = local_anterior != carga.local_atual
+
+    # Cria evento somente quando a localização mudar
+    if local_mudou:
+        evento = HistoricoRastreamento(
+            rastreamento_id=carga.id,
+            status=carga.status,
+            local=carga.local_atual,
+            observacao=(
+                f"Local anterior: {local_anterior or '-'}"
+            )
+        )
+
+        db.session.add(evento)
+
+    db.session.commit()
+
+    return {
+        "mensagem": "Carga atualizada com sucesso!"
+    }, 200
+    
+    
+@app.route(
+    "/api/admin/cargas/<int:id>",
+    methods=["DELETE"]
+)
+@jwt_required()
+def api_excluir_carga(id):
+    usuario_id = int(get_jwt_identity())
+
+    usuario = db.session.get(
+        UsuarioSistema,
+        usuario_id
+    )
+
+    if not usuario or not usuario.ativo:
+        return jsonify({
+            "erro": "Usuário não autorizado."
+        }), 401
+
+    if str(usuario.perfil).strip().lower() != "administrador":
+        return jsonify({
+            "erro": "Somente administradores podem excluir cargas."
+        }), 403
+
+    carga = db.session.get(
+        Rastreamento,
+        id
+    )
+
+    if not carga:
+        return jsonify({
+            "erro": "Carga não encontrada."
+        }), 404
+
+    status_bloqueados = [
+        "Em coleta",
+        "Carregando",
+        "Em trânsito",
+        "Parada operacional",
+        "Saiu para entrega",
+        "Entregue"
+    ]
+
+    if carga.status in status_bloqueados:
+        return jsonify({
+            "erro": (
+                f"Não é possível excluir uma carga "
+                f"com status '{carga.status}'."
+            )
+        }), 409
+
+    viagem = Viagem.query.filter_by(
+        rastreamento_id=carga.id
+    ).first()
+
+    if viagem:
+        return jsonify({
+            "erro": (
+                "Não é possível excluir esta carga "
+                "porque ela possui uma viagem vinculada."
+            )
+        }), 409
+
+    historico = HistoricoRastreamento.query.filter_by(
+        rastreamento_id=carga.id
+    ).first()
+
+    if historico:
+        return jsonify({
+            "erro": (
+                "Não é possível excluir esta carga "
+                "porque ela possui histórico de rastreamento."
+            )
+        }), 409
+
+    try:
+        db.session.delete(carga)
+        db.session.commit()
+
+        return jsonify({
+            "mensagem": "Carga excluída com sucesso!"
+        }), 200
+
+    except Exception as erro:
+        db.session.rollback()
+
+        print(
+            "ERRO AO EXCLUIR CARGA:",
+            erro
+        )
+
+        return jsonify({
+            "erro": (
+                "Não foi possível excluir a carga "
+                "porque existem registros vinculados a ela."
+            )
+        }), 409
+
+@app.route(
+    "/api/admin/cotacoes",
+    methods=["GET"]
+)
+@jwt_required()
+def api_admin_cotacoes():
+
+    cotacoes = (
+        Cotacao.query
+        .outerjoin(
+            Carga,
+            Carga.cotacao_id == Cotacao.id
+        )
+        .filter(
+            Carga.id.is_(None)
+        )
+        .order_by(
+            Cotacao.data_criacao.desc()
+        )
+        .all()
+    )
+
+    lista = []
+
+    for cotacao in cotacoes:
+        lista.append({
+            "id": cotacao.id,
+            "cliente": cotacao.cliente,
+            "whatsapp": cotacao.whatsapp,
+            "origem": cotacao.origem,
+            "destino": cotacao.destino,
+            "tipo_carga": cotacao.tipo_carga,
+            "observacoes": cotacao.observacoes,
+            "status": cotacao.status or "Pendente",
+            "data_criacao": (
+                cotacao.data_criacao.strftime(
+                    "%d/%m/%Y %H:%M"
+                )
+                if cotacao.data_criacao
+                else ""
+            )
+        })
+
+    return jsonify(lista), 200
+
+@app.route("/api/admin/clientes", methods=["GET"])
+@jwt_required()
+def api_admin_clientes():
+    usuario_id = int(get_jwt_identity())
+
+    usuario = db.session.get(
+        UsuarioSistema,
+        usuario_id
+    )
+
+    if not usuario or not usuario.ativo:
+        return jsonify({
+            "erro": "Usuário não autorizado."
+        }), 401
+
+    if str(usuario.perfil).strip().lower() not in [
+        "administrador",
+        "operador"
+    ]:
+        return jsonify({
+            "erro": "Você não possui permissão para acessar clientes."
+        }), 403
+
+    clientes = Cliente.query.order_by(
+        Cliente.data_criacao.desc()
+    ).all()
+
+    lista = []
+
+    for cliente in clientes:
+        lista.append({
+            "id": cliente.id,
+            "razao_social": cliente.razao_social,
+            "nome_fantasia": cliente.nome_fantasia,
+            "documento": cliente.documento,
+            "responsavel": cliente.responsavel,
+            "email": cliente.email,
+            "telefone": cliente.telefone,
+            "cidade": cliente.cidade,
+            "estado": cliente.estado,
+            "ativo": cliente.ativo
+        })
+
+    return jsonify(lista), 200
+
+@app.route("/api/admin/clientes", methods=["POST"])
+@jwt_required()
+def api_criar_cliente():
+    usuario_id = int(get_jwt_identity())
+
+    usuario = db.session.get(
+        UsuarioSistema,
+        usuario_id
+    )
+
+    if not usuario or not usuario.ativo:
+        return jsonify({
+            "erro": "Usuário não autorizado."
+        }), 401
+
+    if str(usuario.perfil).strip().lower() not in [
+        "administrador",
+        "operador"
+    ]:
+        return jsonify({
+            "erro": "Você não possui permissão para criar clientes."
+        }), 403
+
+    dados = request.get_json()
+
+    novo_cliente = Cliente(
+        razao_social=dados.get("razao_social"),
+        nome_fantasia=dados.get("nome_fantasia"),
+        documento=dados.get("documento"),
+        responsavel=dados.get("responsavel"),
+        email=dados.get("email"),
+        telefone=dados.get("telefone"),
+        cidade=dados.get("cidade"),
+        estado=dados.get("estado"),
+        ativo=True
+    )
+
+    db.session.add(novo_cliente)
+    db.session.commit()
+
+    return {
+        "mensagem": "Cliente criado com sucesso!"
+    }, 201
+    
+@app.route("/api/admin/motoristas", methods=["GET"])
+@jwt_required()
+def api_admin_motoristas():
+    usuario_id = int(get_jwt_identity())
+
+    usuario = UsuarioSistema.query.get(usuario_id)
+
+    if not usuario or not usuario.ativo:
+        return jsonify({
+            "erro": "Usuário não autorizado."
+        }), 401
+
+    if str(usuario.perfil).strip().lower() not in [
+        "administrador",
+        "operador"
+    ]:
+        return jsonify({
+            "erro": (
+                "Você não possui permissão "
+                "para acessar motoristas."
+            )
+        }), 403
+
+    motoristas = Motorista.query.order_by(
+        Motorista.data_criacao.desc()
+    ).all()
+
+    return jsonify([
+        {
+            "id": motorista.id,
+            "nome": motorista.nome,
+            "cpf": motorista.cpf or "",
+            "cnh": motorista.cnh or "",
+            "categoria_cnh": (
+                motorista.categoria_cnh or ""
+            ),
+            "validade_cnh": (
+                motorista.validade_cnh or ""
+            ),
+            "telefone": motorista.telefone or "",
+            "email": motorista.email or "",
+            "status": motorista.status or "Ativo",
+            "disponibilidade": (
+                motorista.disponibilidade
+                or "Disponível"
+            )
+        }
+        for motorista in motoristas
+    ]), 200
+
+@app.route("/api/admin/motoristas", methods=["POST"])
+@jwt_required()
+def api_criar_motorista():
+    usuario_id = int(get_jwt_identity())
+
+    usuario_autenticado = db.session.get(
+        UsuarioSistema,
+        usuario_id
+    )
+
+    if not usuario_autenticado or not usuario_autenticado.ativo:
+        return jsonify({
+            "erro": "Usuário não autorizado."
+        }), 401
+
+    perfil_usuario = str(
+        usuario_autenticado.perfil
+    ).strip().lower()
+
+    if perfil_usuario not in [
+        "administrador",
+        "operador"
+    ]:
+        return jsonify({
+            "erro": "Você não possui permissão para criar motoristas."
+        }), 403
+
+    dados = request.get_json(silent=True) or {}
+
+    nome = str(dados.get("nome", "")).strip()
+    usuario = str(dados.get("usuario", "")).strip()
+    email = str(dados.get("email", "")).strip()
+    senha = str(dados.get("senha", "")).strip()
+
+    if not nome:
+        return {"erro": "Informe o nome do motorista."}, 400
+
+    if not usuario:
+        return {"erro": "Informe o usuário do motorista."}, 400
+
+    if UsuarioSistema.query.filter_by(usuario=usuario).first():
+        return {
+            "erro": "Já existe um usuário com este nome de acesso."
+        }, 409
+
+    status_inicial = str(
+        dados.get("status", "Ativo")
+    ).strip()
+
+    if perfil_usuario == "operador":
+        status_inicial = "Ativo"
+
+    motorista = Motorista(
+        nome=nome,
+        cpf=str(dados.get("cpf", "")).strip(),
+        cnh=str(dados.get("cnh", "")).strip(),
+        categoria_cnh=str(
+            dados.get("categoria_cnh", "")
+        ).strip(),
+        validade_cnh=str(
+            dados.get("validade_cnh", "")
+        ).strip(),
+        telefone=str(dados.get("telefone", "")).strip(),
+        email=email,
+        usuario=usuario,
+        senha=senha,
+        status=status_inicial,
+        disponibilidade="Disponível",
+        observacoes=str(
+            dados.get("observacoes", "")
+        ).strip()
+    )
+
+    usuario_sistema = UsuarioSistema(
+        nome=nome,
+        usuario=usuario,
+        email=email,
+        senha=senha,
+        perfil="motorista",
+        ativo=True
+    )
+
+    try:
+        db.session.add(motorista)
+        db.session.add(usuario_sistema)
+        db.session.commit()
+
+        return {
+            "mensagem": "Motorista cadastrado com sucesso!"
+        }, 201
+
+    except Exception as erro:
+        db.session.rollback()
+
+        print("ERRO AO CADASTRAR MOTORISTA:", erro)
+
+        return {
+            "erro": "Não foi possível cadastrar o motorista."
+        }, 500
+
+@app.route("/api/admin/veiculos", methods=["GET"])
+@jwt_required()
+def api_admin_veiculos():
+    usuario_id = int(get_jwt_identity())
+
+    usuario = db.session.get(
+        UsuarioSistema,
+        usuario_id
+    )
+
+    if not usuario or not usuario.ativo:
+        return jsonify({
+            "erro": "Usuário não autorizado."
+        }), 401
+
+    if str(usuario.perfil).strip().lower() not in [
+        "administrador",
+        "operador"
+    ]:
+        return jsonify({
+            "erro": "Você não possui permissão para acessar veículos."
+        }), 403
+
+    veiculos = Veiculo.query.order_by(
+        Veiculo.data_criacao.desc()
+    ).all()
+
+    lista = []
+
+    for veiculo in veiculos:
+        lista.append({
+            "id": veiculo.id,
+            "placa": veiculo.placa,
+            "modelo": veiculo.modelo,
+            "marca": veiculo.marca,
+            "tipo": veiculo.tipo,
+            "ano": veiculo.ano,
+            "capacidade": veiculo.capacidade,
+            "status": veiculo.status
+        })
+
+    return jsonify(lista), 200
+
+@app.route("/api/admin/veiculos", methods=["POST"])
+@jwt_required()
+def api_criar_veiculo():
+    usuario_id = int(get_jwt_identity())
+
+    usuario = db.session.get(
+        UsuarioSistema,
+        usuario_id
+    )
+
+    if not usuario or not usuario.ativo:
+        return jsonify({
+            "erro": "Usuário não autorizado."
+        }), 401
+
+    perfil_usuario = str(usuario.perfil).strip().lower()
+
+    if perfil_usuario not in [
+        "administrador",
+        "operador"
+    ]:
+        return jsonify({
+            "erro": "Você não possui permissão para criar veículos."
+        }), 403
+
+    dados = request.get_json(silent=True) or {}
+
+    placa = str(dados.get("placa", "")).strip().upper()
+
+    if not placa:
+        return {"erro": "Informe a placa."}, 400
+
+    status = str(dados.get("status", "Disponível")).strip()
+
+    if (
+        perfil_usuario == "operador"
+        and status.lower() == "inativo"
+    ):
+        return jsonify({
+            "erro": "Você não possui permissão para inativar veículos."
+        }), 403
+
+    veiculo = Veiculo(
+        placa=placa,
+        modelo=str(dados.get("modelo", "")).strip(),
+        marca=str(dados.get("marca", "")).strip(),
+        tipo=str(dados.get("tipo", "")).strip(),
+        ano=str(dados.get("ano", "")).strip(),
+        capacidade=str(dados.get("capacidade", "")).strip(),
+        status=status
+    )
+
+    db.session.add(veiculo)
+    db.session.commit()
+
+    return {"mensagem": "Veículo cadastrado com sucesso!"}, 201
+
+@app.route("/api/admin/viagens", methods=["GET"])
+@jwt_required()
+def api_admin_viagens():
+    usuario_id = int(get_jwt_identity())
+    usuario = db.session.get(UsuarioSistema, usuario_id)
+
+    if not usuario or not usuario.ativo:
+        return jsonify({"erro": "Usuário não autorizado."}), 401
+
+    if str(usuario.perfil).strip().lower() not in [
+        "administrador", "operador"
+    ]:
+        return jsonify({
+            "erro": "Você não possui permissão para acessar viagens."
+        }), 403
+
+    viagens = Viagem.query.order_by(
+        Viagem.data_criacao.desc()
+    ).all()
+
+    lista = []
+
+    for viagem in viagens:
+        lista.append({
+            "id": viagem.id,
+            "codigo_carga": viagem.carga.codigo if viagem.carga else "",
+            "cliente": viagem.carga.cliente if viagem.carga else "",
+            "motorista": viagem.motorista.nome if viagem.motorista else "",
+            "veiculo": viagem.veiculo.placa if viagem.veiculo else "",
+            "origem": viagem.origem,
+            "destino": viagem.destino,
+            "status": viagem.status,
+            "data_criacao": formatar_data_brasilia(viagem.data_criacao),
+            "data_criacao_iso": viagem.data_criacao.isoformat() if viagem.data_criacao else None,
+        })
+
+    return jsonify(lista), 200
+
+@app.route("/api/admin/viagens", methods=["POST"])
+@jwt_required()
+def api_criar_viagem():
+    # Endpoint legado mantido por compatibilidade.
+    usuario_id = int(get_jwt_identity())
+    usuario = db.session.get(UsuarioSistema, usuario_id)
+
+    if not usuario or not usuario.ativo:
+        return jsonify({"erro": "Usuário não autorizado."}), 401
+
+    if str(usuario.perfil).strip().lower() not in [
+        "administrador", "operador"
+    ]:
+        return jsonify({
+            "erro": "Você não possui permissão para criar viagens."
+        }), 403
+
+    dados = request.get_json(silent=True) or {}
+
+    rastreamento_id = dados.get("rastreamento_id")
+    motorista_id = dados.get("motorista_id")
+    veiculo_id = dados.get("veiculo_id")
+
+    carga = Rastreamento.query.get(rastreamento_id)
+
+    if not carga:
+        return {"erro": "Carga não encontrada."}, 404
+
+    nova_viagem = Viagem(
+        rastreamento_id=int(rastreamento_id),
+        motorista_id=int(motorista_id) if motorista_id else None,
+        veiculo_id=int(veiculo_id) if veiculo_id else None,
+        origem=carga.local_atual,
+        destino=carga.destino,
+        status="Planejada"
+    )
+
+    db.session.add(nova_viagem)
+    db.session.flush()
+    
+    historico = HistoricoViagem(
+    viagem_id=nova_viagem.id,
+    status="Planejada",
+    observacao="Viagem criada pelo painel administrativo"
+)
+
+    db.session.add(historico)
+    db.session.commit()
+
+    return {"mensagem": "Viagem criada com sucesso!"}, 201
+
+@app.route("/api/admin/viagens/<int:id>/historico", methods=["GET"])
+@jwt_required()
+def api_historico_viagem(id):
+    usuario_id = int(get_jwt_identity())
+    usuario = db.session.get(UsuarioSistema, usuario_id)
+
+    if not usuario or not usuario.ativo:
+        return jsonify({"erro": "Usuário não autorizado."}), 401
+
+    if str(usuario.perfil).strip().lower() not in [
+        "administrador", "operador"
+    ]:
+        return jsonify({
+            "erro": "Você não possui permissão para consultar históricos de viagens."
+        }), 403
+
+    historicos = HistoricoViagem.query.filter_by(
+        viagem_id=id
+    ).order_by(
+        HistoricoViagem.data_evento.desc()
+    ).all()
+
+    lista = []
+
+    for item in historicos:
+        lista.append({
+            "id": item.id,
+            "status": item.status,
+            "observacao": item.observacao,
+            "data_evento": formatar_data_brasilia(item.data_evento)
+        })
+
+    return jsonify(lista), 200
+
+@app.route(
+    "/api/admin/viagens/<int:id>/status",
+    methods=["POST"]
+)
+@jwt_required()
+def api_atualizar_status_viagem(id):
+    usuario_id = int(get_jwt_identity())
+    usuario = db.session.get(UsuarioSistema, usuario_id)
+
+    if not usuario or not usuario.ativo:
+        return jsonify({"erro": "Usuário não autorizado."}), 401
+
+    if str(usuario.perfil).strip().lower() not in [
+        "administrador", "operador"
+    ]:
+        return jsonify({
+            "erro": "Você não possui permissão para alterar viagens."
+        }), 403
+
+    viagem = Viagem.query.get_or_404(id)
+
+    status_atual = str(viagem.status).strip().lower()
+
+    if status_atual == "cancelada":
+        return jsonify({
+            "erro": "Não é possível alterar o status de uma viagem cancelada."
+        }), 409
+
+    if status_atual == "entregue":
+        return jsonify({
+            "erro": "Não é possível alterar o status de uma viagem já entregue."
+        }), 409
+
+    dados = request.get_json() or {}
+
+    novo_status = str(
+        dados.get("status", "")
+    ).strip()
+
+    status_permitidos = [
+        "Em coleta",
+        "Carregando",
+        "Em trânsito",
+        "Parada operacional",
+        "Saiu para entrega",
+        "Cancelada"
+    ]
+
+    if novo_status not in status_permitidos:
+        return jsonify({
+            "erro": "Status inválido."
+        }), 400
+
+    motorista = db.session.get(
+        Motorista,
+        viagem.motorista_id
+    )
+
+    veiculo = db.session.get(
+        Veiculo,
+        viagem.veiculo_id
+    )
+
+    carga = db.session.get(
+        Rastreamento,
+        viagem.rastreamento_id
+    )
+
+    if (
+        novo_status in STATUS_VIAGEM_ATIVOS_RECURSOS
+        and veiculo
+        and veiculo_possui_status_especial(veiculo)
+    ):
+        return jsonify({
+            "erro": (
+                "Não é possível iniciar uma operação com veículo "
+                "inativo ou em manutenção."
+            )
+        }), 409
+
+    try:
+        viagem.status = novo_status
+
+        # Mantém carga e viagem sincronizadas.
+        if carga:
+            carga.status = novo_status
+
+            if hasattr(carga, "ultima_atualizacao"):
+                carga.ultima_atualizacao = datetime.utcnow()
+
+        # ------------------------------------------------
+        # CANCELAMENTO
+        # ------------------------------------------------
+        if novo_status == "Cancelada":
+
+            recalcular_disponibilidade_motorista(
+                motorista,
+                excluir_viagem_id=viagem.id,
+                excluir_carga_id=(carga.id if carga else None)
+            )
+
+            recalcular_status_veiculo(
+                veiculo,
+                excluir_viagem_id=viagem.id,
+                excluir_carga_id=(carga.id if carga else None)
+            )
+
+        # ------------------------------------------------
+        # VIAGEM OPERACIONAL
+        # ------------------------------------------------
+        else:
+
+            if motorista:
+                motorista.disponibilidade = "Em viagem"
+
+            if veiculo:
+                veiculo.status = "Em viagem"
+
+        historico = HistoricoViagem(
+            viagem_id=viagem.id,
+            status="STATUS",
+            observacao=(
+                f"Status alterado para {novo_status}."
+            )
+        )
+
+        db.session.add(historico)
+
+        if carga:
+            historico_rastreamento = HistoricoRastreamento(
+                rastreamento_id=carga.id,
+                status=novo_status,
+                local=carga.local_atual,
+                observacao=(
+                    f"Status da viagem alterado para {novo_status}."
+                )
+            )
+
+            db.session.add(historico_rastreamento)
+
+        db.session.commit()
+
+        return jsonify({
+            "mensagem": "Status atualizado com sucesso!",
+            "status": viagem.status,
+            "disponibilidade_motorista": (
+                motorista.disponibilidade
+                if motorista
+                else None
+            )
+        }), 200
+
+    except Exception as erro:
+        db.session.rollback()
+
+        print(
+            "ERRO AO ATUALIZAR STATUS DA VIAGEM:",
+            erro
+        )
+
+        return jsonify({
+            "erro": "Não foi possível atualizar o status."
+        }), 500
+    
+@app.route(
+    "/api/motorista/minhas-viagens/<int:id>/status",
+    methods=["POST"]
+)
+@jwt_required()
+def api_atualizar_status_viagem_motorista(id):
+    usuario_id = int(get_jwt_identity())
+
+    usuario_sistema = db.session.get(
+        UsuarioSistema,
+        usuario_id
+    )
+
+    if not usuario_sistema or not usuario_sistema.ativo:
+        return jsonify({
+            "erro": "Usuário não autorizado."
+        }), 401
+
+    if str(usuario_sistema.perfil).strip().lower() != "motorista":
+        return jsonify({
+            "erro": "Acesso permitido somente para motoristas."
+        }), 403
+
+    motorista = Motorista.query.filter_by(
+        usuario=usuario_sistema.usuario
+    ).first()
+
+    if not motorista:
+        return jsonify({
+            "erro": "O usuário não está vinculado a um motorista."
+        }), 404
+
+    if str(motorista.status).strip().lower() == "inativo":
+        return jsonify({
+            "erro": "Este motorista está inativo."
+        }), 403
+
+    viagem = Viagem.query.filter_by(
+        id=id,
+        motorista_id=motorista.id
+    ).first()
+
+    if not viagem:
+        return jsonify({
+            "erro": (
+                "Viagem não encontrada ou não pertence "
+                "a este motorista."
+            )
+        }), 404
+
+    status_atual = str(viagem.status).strip().lower()
+
+    if status_atual == "cancelada":
+        return jsonify({
+            "erro": "Não é possível alterar o status de uma viagem cancelada."
+        }), 409
+
+    if status_atual == "entregue":
+        return jsonify({
+            "erro": "Não é possível alterar o status de uma viagem já entregue."
+        }), 409
+
+    dados = request.get_json(silent=True) or {}
+
+    novo_status = str(
+        dados.get("status", "")
+    ).strip()
+
+    status_permitidos = [
+        "Em coleta",
+        "Carregando",
+        "Em trânsito",
+        "Parada operacional",
+        "Saiu para entrega",
+    ]
+
+    if novo_status not in status_permitidos:
+        return jsonify({
+            "erro": (
+                "Este status não pode ser definido "
+                "pelo motorista."
+            )
+        }), 400
+
+    carga = db.session.get(
+        Rastreamento,
+        viagem.rastreamento_id
+    )
+
+    veiculo = db.session.get(
+        Veiculo,
+        viagem.veiculo_id
+    )
+
+    if veiculo and veiculo_possui_status_especial(veiculo):
+        return jsonify({
+            "erro": (
+                "Não é possível atualizar a operação com veículo "
+                "inativo ou em manutenção."
+            )
+        }), 409
+
+    try:
+        viagem.status = novo_status
+
+        # Status operacional = motorista em viagem.
+        motorista.disponibilidade = "Em viagem"
+
+        if veiculo:
+            veiculo.status = "Em viagem"
+
+        # Sincroniza também a carga.
+        if carga:
+            carga.status = novo_status
+
+            if hasattr(carga, "ultima_atualizacao"):
+                carga.ultima_atualizacao = datetime.utcnow()
+
+        historico = HistoricoViagem(
+            viagem_id=viagem.id,
+            status="STATUS",
+            observacao=(
+                f"Status alterado para {novo_status} "
+                "pelo motorista."
+            )
+        )
+
+        db.session.add(historico)
+
+        if carga:
+            historico_rastreamento = HistoricoRastreamento(
+                rastreamento_id=carga.id,
+                status=novo_status,
+                local=carga.local_atual,
+                observacao=(
+                    f"Status da viagem alterado para {novo_status} "
+                    "pelo motorista."
+                )
+            )
+
+            db.session.add(historico_rastreamento)
+
+        db.session.commit()
+
+        return jsonify({
+            "mensagem": "Status atualizado com sucesso!",
+            "status": viagem.status,
+            "disponibilidade_motorista": (
+                motorista.disponibilidade
+            )
+        }), 200
+
+    except Exception as erro:
+        db.session.rollback()
+
+        print(
+            "ERRO AO ATUALIZAR STATUS PELO MOTORISTA:",
+            erro
+        )
+
+        return jsonify({
+            "erro": "Não foi possível atualizar o status."
+        }), 500
+        
+@app.route("/api/admin/viagens/<int:id>", methods=["GET"])
+@jwt_required()
+def api_detalhe_viagem(id):
+    usuario_id = int(get_jwt_identity())
+    usuario = db.session.get(UsuarioSistema, usuario_id)
+
+    if not usuario or not usuario.ativo:
+        return jsonify({"erro": "Usuário não autorizado."}), 401
+
+    if str(usuario.perfil).strip().lower() not in [
+        "administrador", "operador"
+    ]:
+        return jsonify({
+            "erro": "Você não possui permissão para consultar viagens."
+        }), 403
+
+    viagem = Viagem.query.get_or_404(id)
+
+    return {
+        "id": viagem.id,
+        "codigo_carga": viagem.carga.codigo if viagem.carga else "",
+        "cliente": viagem.carga.cliente if viagem.carga else "",
+        "motorista": viagem.motorista.nome if viagem.motorista else "",
+        "veiculo": viagem.veiculo.placa if viagem.veiculo else "",
+        "origem": viagem.origem,
+        "destino": viagem.destino,
+        "status": viagem.status,
+        "data_criacao": formatar_data_brasilia(
+    viagem.data_criacao
+),
+        "data_criacao_iso": viagem.data_criacao.isoformat() if viagem.data_criacao else None
+    }
+    
+@app.route(
+    "/api/admin/viagens/<int:id>/ocorrencias",
+    methods=["GET"]
+)
+@jwt_required()
+def api_ocorrencias_viagem(id):
+    usuario_id = int(get_jwt_identity())
+    usuario = db.session.get(UsuarioSistema, usuario_id)
+
+    if not usuario or not usuario.ativo:
+        return jsonify({"erro": "Usuário não autorizado."}), 401
+
+    if str(usuario.perfil).strip().lower() not in [
+        "administrador", "operador"
+    ]:
+        return jsonify({
+            "erro": "Você não possui permissão para consultar ocorrências."
+        }), 403
+
+    ocorrencias = OcorrenciaViagem.query.filter_by(
+        viagem_id=id
+    ).order_by(
+        OcorrenciaViagem.data_criacao.desc()
+    ).all()
+
+    lista = []
+
+    for item in ocorrencias:
+        lista.append({
+            "id": item.id,
+            "descricao": item.descricao,
+            "data": formatar_data_brasilia(item.data_criacao),
+            "data_iso": item.data_criacao.isoformat() if item.data_criacao else None
+        })
+
+    return lista
+
+@app.route(
+    "/api/motorista/minhas-viagens/<int:id>/ocorrencias",
+    methods=["GET"]
+)
+@jwt_required()
+def api_ocorrencias_viagem_motorista(id):
+    usuario_id = int(get_jwt_identity())
+
+    usuario_sistema = db.session.get(
+        UsuarioSistema,
+        usuario_id
+    )
+
+    if not usuario_sistema or not usuario_sistema.ativo:
+        return jsonify({
+            "erro": "Usuário não autorizado."
+        }), 401
+
+    if str(usuario_sistema.perfil).strip().lower() != "motorista":
+        return jsonify({
+            "erro": "Acesso permitido somente para motoristas."
+        }), 403
+
+    motorista = Motorista.query.filter_by(
+        usuario=usuario_sistema.usuario
+    ).first()
+
+    if not motorista:
+        return jsonify({
+            "erro": "O usuário não está vinculado a um motorista."
+        }), 404
+
+    if str(motorista.status).strip().lower() == "inativo":
+        return jsonify({
+            "erro": "Este motorista está inativo."
+        }), 403
+
+    viagem = Viagem.query.filter_by(
+        id=id,
+        motorista_id=motorista.id
+    ).first()
+
+    if not viagem:
+        return jsonify({
+            "erro": (
+                "Viagem não encontrada ou não pertence "
+                "a este motorista."
+            )
+        }), 404
+
+    ocorrencias = OcorrenciaViagem.query.filter_by(
+        viagem_id=viagem.id
+    ).order_by(
+        OcorrenciaViagem.data_criacao.desc()
+    ).all()
+
+    lista = []
+
+    for item in ocorrencias:
+        lista.append({
+            "id": item.id,
+            "descricao": item.descricao,
+            "data": (
+                item.data_criacao.strftime(
+                    "%d/%m/%Y %H:%M"
+                )
+                if item.data_criacao
+                else ""
+            ),
+            "data_iso": (
+                item.data_criacao.isoformat()
+                if item.data_criacao
+                else None
+            )
+        })
+
+    return jsonify(lista), 200
+
+@app.route(
+    "/api/admin/viagens/<int:id>/ocorrencias",
+    methods=["POST"]
+)
+@jwt_required()
+def api_criar_ocorrencia(id):
+    usuario_id = int(get_jwt_identity())
+    usuario = db.session.get(UsuarioSistema, usuario_id)
+
+    if not usuario or not usuario.ativo:
+        return jsonify({"erro": "Usuário não autorizado."}), 401
+
+    if str(usuario.perfil).strip().lower() not in [
+        "administrador", "operador"
+    ]:
+        return jsonify({
+            "erro": "Você não possui permissão para registrar ocorrências."
+        }), 403
+
+    dados = request.get_json(silent=True) or {}
+
+    ocorrencia = OcorrenciaViagem(
+        viagem_id=id,
+        descricao=str(dados.get("descricao", "")).strip()
+    )
+
+    db.session.add(ocorrencia)
+
+    historico = HistoricoViagem(
+        viagem_id=id,
+        status="Ocorrência",
+        observacao=str(dados.get("descricao", "")).strip()
+    )
+
+    db.session.add(historico)
+
+    db.session.commit()
+
+    return {
+        "mensagem": "Ocorrência registrada!"
+    }
+    
+@app.route("/api/admin/ranking-motoristas")
+def api_ranking_motoristas():
+
+    ranking = db.session.execute(
+        db.text("""
+            SELECT
+                m.nome,
+                COUNT(v.id) as total_viagens
+            FROM motorista m
+            LEFT JOIN viagem v
+                ON v.motorista_id = m.id
+            GROUP BY m.id
+            ORDER BY total_viagens DESC
+            LIMIT 5
+        """)
+    )
+
+    lista = []
+
+    for item in ranking:
+        lista.append({
+            "nome": item.nome,
+            "total_viagens": item.total_viagens
+        })
+
+    return lista
+
+@app.route("/api/admin/frota/resumo")
+def api_resumo_frota():
+
+    disponiveis = Veiculo.query.filter_by(
+        status="Disponível"
+    ).count()
+
+    em_viagem = Veiculo.query.filter_by(
+        status="Em viagem"
+    ).count()
+
+    manutencao = Veiculo.query.filter_by(
+        status="Manutenção"
+    ).count()
+
+    return {
+        "disponiveis": disponiveis,
+        "em_viagem": em_viagem,
+        "manutencao": manutencao
+    }
+    
+@app.route(
+    "/api/admin/viagens/<int:id>/comprovante",
+    methods=["GET"]
+)
+@jwt_required()
+def api_consultar_comprovante(id):
+    usuario_id = int(get_jwt_identity())
+    usuario = db.session.get(UsuarioSistema, usuario_id)
+
+    if not usuario or not usuario.ativo:
+        return jsonify({"erro": "Usuário não autorizado."}), 401
+
+    if str(usuario.perfil).strip().lower() not in [
+        "administrador", "operador"
+    ]:
+        return jsonify({
+            "erro": "Você não possui permissão para consultar comprovantes."
+        }), 403
+
+
+    comprovante = ComprovanteEntrega.query.filter_by(
+        viagem_id=id
+    ).first()
+
+    if not comprovante:
+        return {}
+
+    return {
+        "recebedor": comprovante.recebedor,
+        "observacao": comprovante.observacao,
+        "data_entrega":
+            comprovante.data_entrega.strftime(
+                "%d/%m/%Y %H:%M"
+            )
+    } 
+
+@app.route(
+    "/api/motorista/minhas-viagens/<int:id>/comprovante",
+    methods=["GET"]
+)
+@jwt_required()
+def api_consultar_comprovante_motorista(id):
+    usuario_id = int(get_jwt_identity())
+
+    usuario_sistema = db.session.get(
+        UsuarioSistema,
+        usuario_id
+    )
+
+    if not usuario_sistema or not usuario_sistema.ativo:
+        return jsonify({
+            "erro": "Usuário não autorizado."
+        }), 401
+
+    if str(usuario_sistema.perfil).strip().lower() != "motorista":
+        return jsonify({
+            "erro": "Acesso permitido somente para motoristas."
+        }), 403
+
+    motorista = Motorista.query.filter_by(
+        usuario=usuario_sistema.usuario
+    ).first()
+
+    if not motorista:
+        return jsonify({
+            "erro": "O usuário não está vinculado a um motorista."
+        }), 404
+
+    if str(motorista.status).strip().lower() == "inativo":
+        return jsonify({
+            "erro": "Este motorista está inativo."
+        }), 403
+
+    viagem = Viagem.query.filter_by(
+        id=id,
+        motorista_id=motorista.id
+    ).first()
+
+    if not viagem:
+        return jsonify({
+            "erro": (
+                "Viagem não encontrada ou não pertence "
+                "a este motorista."
+            )
+        }), 404
+
+    comprovante = ComprovanteEntrega.query.filter_by(
+        viagem_id=viagem.id
+    ).first()
+
+    if not comprovante:
+        return jsonify({}), 200
+
+    return jsonify({
+        "id": comprovante.id,
+        "viagem_id": comprovante.viagem_id,
+        "recebedor": comprovante.recebedor,
+        "observacao": comprovante.observacao or "",
+        "data_entrega": (
+            comprovante.data_entrega.strftime(
+                "%d/%m/%Y %H:%M"
+            )
+            if comprovante.data_entrega
+            else ""
+        )
+    }), 200
+    
+@app.route(
+    "/api/admin/viagens/<int:id>/comprovante/arquivo",
+    methods=["POST"]
+)
+@jwt_required()
+def api_upload_arquivo_comprovante(id):
+    usuario_id = int(get_jwt_identity())
+    usuario = db.session.get(UsuarioSistema, usuario_id)
+
+    if not usuario or not usuario.ativo:
+        return jsonify({"erro": "Usuário não autorizado."}), 401
+
+    if str(usuario.perfil).strip().lower() not in [
+        "administrador", "operador"
+    ]:
+        return jsonify({
+            "erro": "Você não possui permissão para anexar comprovantes."
+        }), 403
+
+    arquivo = request.files.get("arquivo")
+
+    if not arquivo:
+        return {"erro": "Nenhum arquivo enviado."}, 400
+
+    nome_seguro = secure_filename(arquivo.filename)
+
+    nome_final = f"{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{nome_seguro}"
+
+    caminho = os.path.join(
+        app.config["UPLOAD_FOLDER"],
+        nome_final
+    )
+
+    arquivo.save(caminho)
+
+    registro = ArquivoComprovanteViagem(
+        viagem_id=id,
+        nome_arquivo=nome_final
+    )
+
+    historico = HistoricoViagem(
+        viagem_id=id,
+        status="Comprovante anexado",
+        observacao=f"Arquivo anexado: {nome_seguro}"
+    )
+
+    db.session.add(registro)
+    db.session.add(historico)
+    db.session.commit()
+
+    return {
+        "mensagem": "Arquivo do comprovante enviado com sucesso!"
+    }, 201 
+    
+@app.route(
+    "/api/motorista/minhas-viagens/<int:id>/comprovante/arquivo",
+    methods=["POST"]
+)
+@jwt_required()
+def api_upload_arquivo_comprovante_motorista(id):
+    usuario_id = int(get_jwt_identity())
+
+    usuario_sistema = db.session.get(
+        UsuarioSistema,
+        usuario_id
+    )
+
+    if not usuario_sistema or not usuario_sistema.ativo:
+        return jsonify({
+            "erro": "Usuário não autorizado."
+        }), 401
+
+    if str(usuario_sistema.perfil).strip().lower() != "motorista":
+        return jsonify({
+            "erro": "Acesso permitido somente para motoristas."
+        }), 403
+
+    motorista = Motorista.query.filter_by(
+        usuario=usuario_sistema.usuario
+    ).first()
+
+    if not motorista:
+        return jsonify({
+            "erro": "O usuário não está vinculado a um motorista."
+        }), 404
+
+    if str(motorista.status).strip().lower() == "inativo":
+        return jsonify({
+            "erro": "Este motorista está inativo."
+        }), 403
+
+    viagem = Viagem.query.filter_by(
+        id=id,
+        motorista_id=motorista.id
+    ).first()
+
+    if not viagem:
+        return jsonify({
+            "erro": (
+                "Viagem não encontrada ou não pertence "
+                "a este motorista."
+            )
+        }), 404
+
+    arquivo = request.files.get("arquivo")
+
+    if not arquivo:
+        return jsonify({
+            "erro": "Nenhum arquivo enviado."
+        }), 400
+
+    nome_seguro = secure_filename(
+        arquivo.filename
+    )
+
+    if not nome_seguro:
+        return jsonify({
+            "erro": "Arquivo inválido."
+        }), 400
+
+    nome_final = (
+        f"{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_"
+        f"{nome_seguro}"
+    )
+
+    caminho = os.path.join(
+        app.config["UPLOAD_FOLDER"],
+        nome_final
+    )
+
+    try:
+        arquivo.save(caminho)
+
+        registro = ArquivoComprovanteViagem(
+            viagem_id=viagem.id,
+            nome_arquivo=nome_final
+        )
+
+        historico = HistoricoViagem(
+            viagem_id=viagem.id,
+            status="Comprovante anexado",
+            observacao=(
+                f"Arquivo anexado pelo motorista: "
+                f"{nome_seguro}"
+            )
+        )
+
+        db.session.add(registro)
+        db.session.add(historico)
+        db.session.commit()
+
+        return jsonify({
+            "mensagem": (
+                "Arquivo do comprovante enviado "
+                "com sucesso!"
+            )
+        }), 201
+
+    except Exception as erro:
+        db.session.rollback()
+
+        if os.path.exists(caminho):
+            try:
+                os.remove(caminho)
+            except OSError:
+                pass
+
+        print(
+            "ERRO AO ENVIAR COMPROVANTE PELO MOTORISTA:",
+            erro
+        )
+
+        return jsonify({
+            "erro": "Não foi possível enviar o arquivo."
+        }), 500
+    
+@app.route(
+    "/api/admin/viagens/<int:id>/comprovantes/arquivos",
+    methods=["GET"]
+)
+@jwt_required()
+def api_listar_arquivos_comprovante(id):
+    usuario_id = int(get_jwt_identity())
+    usuario = db.session.get(UsuarioSistema, usuario_id)
+
+    if not usuario or not usuario.ativo:
+        return jsonify({"erro": "Usuário não autorizado."}), 401
+
+    if str(usuario.perfil).strip().lower() not in [
+        "administrador", "operador"
+    ]:
+        return jsonify({
+            "erro": "Você não possui permissão para consultar comprovantes."
+        }), 403
+
+    arquivos = ArquivoComprovanteViagem.query.filter_by(
+        viagem_id=id
+    ).order_by(
+        ArquivoComprovanteViagem.data_upload.desc()
+    ).all()
+
+    lista = []
+
+    for arquivo in arquivos:
+        lista.append({
+            "id": arquivo.id,
+            "nome_arquivo": arquivo.nome_arquivo,
+            "data_upload": formatar_data_brasilia(arquivo.data_upload),
+            "url": f"http://127.0.0.1:5000/static/uploads/{arquivo.nome_arquivo}"
+        })
+
+    return lista   
+
+@app.route(
+    "/api/motorista/minhas-viagens/<int:id>/comprovantes/arquivos",
+    methods=["GET"]
+)
+@jwt_required()
+def api_listar_arquivos_comprovante_motorista(id):
+    usuario_id = int(get_jwt_identity())
+
+    usuario_sistema = db.session.get(
+        UsuarioSistema,
+        usuario_id
+    )
+
+    if not usuario_sistema or not usuario_sistema.ativo:
+        return jsonify({
+            "erro": "Usuário não autorizado."
+        }), 401
+
+    if str(usuario_sistema.perfil).strip().lower() != "motorista":
+        return jsonify({
+            "erro": "Acesso permitido somente para motoristas."
+        }), 403
+
+    motorista = Motorista.query.filter_by(
+        usuario=usuario_sistema.usuario
+    ).first()
+
+    if not motorista:
+        return jsonify({
+            "erro": "O usuário não está vinculado a um motorista."
+        }), 404
+
+    if str(motorista.status).strip().lower() == "inativo":
+        return jsonify({
+            "erro": "Este motorista está inativo."
+        }), 403
+
+    viagem = Viagem.query.filter_by(
+        id=id,
+        motorista_id=motorista.id
+    ).first()
+
+    if not viagem:
+        return jsonify({
+            "erro": (
+                "Viagem não encontrada ou não pertence "
+                "a este motorista."
+            )
+        }), 404
+
+    arquivos = ArquivoComprovanteViagem.query.filter_by(
+        viagem_id=viagem.id
+    ).order_by(
+        ArquivoComprovanteViagem.data_upload.desc()
+    ).all()
+
+    lista = []
+
+    for arquivo in arquivos:
+        lista.append({
+            "id": arquivo.id,
+            "nome_arquivo": arquivo.nome_arquivo,
+            "data_upload": (
+                arquivo.data_upload.strftime(
+                    "%d/%m/%Y %H:%M"
+                )
+                if arquivo.data_upload
+                else ""
+            ),
+            "url": (
+                "http://127.0.0.1:5000/"
+                f"static/uploads/{arquivo.nome_arquivo}"
+            )
+        })
+
+    return jsonify(lista), 200 
+
+@app.route("/api/admin/relatorios/viagens")
+@jwt_required()
+def api_relatorio_viagens():
+    usuario_id = int(get_jwt_identity())
+    usuario = db.session.get(UsuarioSistema, usuario_id)
+
+    if not usuario or not usuario.ativo:
+        return jsonify({"erro": "Usuário não autorizado."}), 401
+
+    if str(usuario.perfil).strip().lower() not in [
+        "administrador", "operador"
+    ]:
+        return jsonify({
+            "erro": "Você não possui permissão para acessar relatórios de viagens."
+        }), 403
+
+    viagens = Viagem.query.all()
+
+    lista = []
+
+    for viagem in viagens:
+        lista.append({
+            "codigo": viagem.carga.codigo if viagem.carga else "",
+            "cliente": viagem.carga.cliente if viagem.carga else "",
+            "origem": viagem.origem,
+            "destino": viagem.destino,
+            "status": viagem.status
+        })
+
+    return lista 
+
+@app.route("/api/admin/relatorios/viagens/pdf")
+@jwt_required()
+def api_relatorio_viagens_pdf():
+    usuario_id = int(get_jwt_identity())
+    usuario = db.session.get(UsuarioSistema, usuario_id)
+
+    if not usuario or not usuario.ativo:
+        return jsonify({"erro": "Usuário não autorizado."}), 401
+
+    if str(usuario.perfil).strip().lower() not in [
+        "administrador", "operador"
+    ]:
+        return jsonify({
+            "erro": "Você não possui permissão para acessar relatórios de viagens."
+        }), 403
+
+    buffer = io.BytesIO()
+
+    pdf = canvas.Canvas(buffer, pagesize=A4)
+
+    pdf.setTitle("Relatório de Viagens")
+
+    pdf.setFont("Helvetica-Bold", 16)
+    pdf.drawString(
+        50,
+        800,
+        "TRANSPORTADORA RAMOS"
+    )
+
+    pdf.setFont("Helvetica", 12)
+    pdf.drawString(
+        50,
+        780,
+        "Relatório de Viagens"
+    )
+
+    y = 740
+
+    viagens = Viagem.query.all()
+
+    for viagem in viagens:
+
+        codigo = (
+            viagem.carga.codigo
+            if viagem.carga
+            else "Sem código"
+        )
+
+        cliente = (
+            viagem.carga.cliente
+            if viagem.carga
+            else "Sem cliente"
+        )
+
+        pdf.drawString(
+            50,
+            y,
+            f"Código: {codigo}"
+        )
+
+        pdf.drawString(
+            220,
+            y,
+            f"Cliente: {cliente}"
+        )
+
+        y -= 20
+
+        pdf.drawString(
+            50,
+            y,
+            f"Origem: {viagem.origem}"
+        )
+
+        y -= 20
+
+        pdf.drawString(
+            50,
+            y,
+            f"Destino: {viagem.destino}"
+        )
+
+        y -= 20
+
+        pdf.drawString(
+            50,
+            y,
+            f"Status: {viagem.status}"
+        )
+
+        y -= 35
+
+        if y < 80:
+            pdf.showPage()
+            y = 800
+
+    pdf.save()
+
+    buffer.seek(0)
+
+    return send_file(
+        buffer,
+        as_attachment=True,
+        download_name="relatorio_viagens.pdf",
+        mimetype="application/pdf"
+    )
+    
+@app.route("/api/admin/financeiro/resumo")
+def api_resumo_financeiro():
+
+    cargas = Rastreamento.query.all()
+
+    faturamento_total = 0
+    total_pago = 0
+    total_pendente = 0
+
+    for carga in cargas:
+
+        valor = carga.valor_frete or 0
+
+        faturamento_total += valor
+
+        if carga.status_pagamento == "Pago":
+            total_pago += valor
+        else:
+            total_pendente += valor
+
+    return {
+        "faturamento_total": faturamento_total,
+        "total_pago": total_pago,
+        "total_pendente": total_pendente
+    }
+    
+@app.route("/api/admin/alertas")
+def api_admin_alertas():
+    alertas = []
+
+    cargas_atrasadas = Rastreamento.query.filter_by(
+        status="Atrasada"
+    ).count()
+
+    if cargas_atrasadas > 0:
+        alertas.append({
+            "tipo": "Carga atrasada",
+            "mensagem": f"{cargas_atrasadas} carga(s) atrasada(s).",
+            "nivel": "perigo"
+        })
+
+    veiculos_manutencao = Veiculo.query.filter_by(
+        status="Manutenção"
+    ).count()
+
+    if veiculos_manutencao > 0:
+        alertas.append({
+            "tipo": "Veículo em manutenção",
+            "mensagem": f"{veiculos_manutencao} veículo(s) em manutenção.",
+            "nivel": "alerta"
+        })
+
+    viagens_em_transito = Viagem.query.filter_by(
+        status="Em trânsito"
+    ).count()
+
+    if viagens_em_transito > 0:
+        alertas.append({
+            "tipo": "Viagens em andamento",
+            "mensagem": f"{viagens_em_transito} viagem(ns) em trânsito.",
+            "nivel": "info"
+        })
+
+    return alertas   
+
+@app.route("/api/admin/indicadores")
+def api_indicadores():
+
+    cargas = Rastreamento.query.all()
+
+    total_cargas = len(cargas)
+
+    entregues = len([
+        c for c in cargas
+        if c.status == "Entregue"
+    ])
+
+    percentual_entregues = 0
+
+    if total_cargas > 0:
+        percentual_entregues = round(
+            (entregues / total_cargas) * 100,
+            1
+        )
+
+    faturamento = sum(
+        c.valor_frete or 0
+        for c in cargas
+    )
+
+    ticket_medio = 0
+
+    if total_cargas > 0:
+        ticket_medio = round(
+            faturamento / total_cargas,
+            2
+        )
+
+    total_veiculos = Veiculo.query.count()
+
+    veiculos_ativos = Veiculo.query.filter_by(
+        status="Em viagem"
+    ).count()
+
+    percentual_frota_ativa = 0
+
+    if total_veiculos > 0:
+        percentual_frota_ativa = round(
+            (veiculos_ativos / total_veiculos) * 100,
+            1
+        )
+
+    return {
+        "ticket_medio": ticket_medio,
+        "percentual_entregues": percentual_entregues,
+        "percentual_frota_ativa": percentual_frota_ativa
+    }
+    
+@app.route("/api/admin/viagens/<int:id>/localizacoes", methods=["GET"])
+@jwt_required()
+def api_listar_localizacoes_viagem(id):
+    usuario_id = int(get_jwt_identity())
+    usuario = db.session.get(UsuarioSistema, usuario_id)
+
+    if not usuario or not usuario.ativo:
+        return jsonify({"erro": "Usuário não autorizado."}), 401
+
+    if str(usuario.perfil).strip().lower() not in [
+        "administrador", "operador"
+    ]:
+        return jsonify({
+            "erro": "Você não possui permissão para consultar localizações."
+        }), 403
+
+    localizacoes = LocalizacaoViagem.query.filter_by(
+        viagem_id=id
+    ).order_by(
+        LocalizacaoViagem.data_registro.desc()
+    ).all()
+
+    lista = []
+
+    for item in localizacoes:
+            lista.append({
+            "id": item.id,
+            "localizacao": item.localizacao,
+            "observacao": item.observacao,
+            "data_registro": formatar_data_brasilia(item.data_registro)
+        })
+
+    return jsonify(lista), 200
+
+@app.route("/api/admin/viagens/<int:id>/localizacoes", methods=["POST"])
+@jwt_required()
+def api_criar_localizacao_viagem(id):
+    usuario_id = int(get_jwt_identity())
+    usuario = db.session.get(UsuarioSistema, usuario_id)
+
+    if not usuario or not usuario.ativo:
+        return jsonify({"erro": "Usuário não autorizado."}), 401
+
+    if str(usuario.perfil).strip().lower() not in [
+        "administrador", "operador"
+    ]:
+        return jsonify({
+            "erro": "Você não possui permissão para registrar localizações."
+        }), 403
+
+    dados = request.get_json()
+
+    localizacao = LocalizacaoViagem(
+        viagem_id=id,
+        localizacao=dados.get("localizacao"),
+        observacao=dados.get("observacao")
+    )
+
+    db.session.add(localizacao)
+
+    historico = HistoricoViagem(
+        viagem_id=id,
+        status="Localização atualizada",
+        observacao=dados.get("localizacao")
+    )
+
+    db.session.add(historico)
+    db.session.commit()
+
+    return {
+        "mensagem": "Localização registrada com sucesso!"
+    }, 201  
+    
+@app.route(
+    "/api/motorista/minhas-viagens/<int:id>/localizacoes",
+    methods=["GET"]
+)
+@jwt_required()
+def api_listar_localizacoes_motorista(id):
+    usuario_id = int(get_jwt_identity())
+
+    usuario_sistema = db.session.get(
+        UsuarioSistema,
+        usuario_id
+    )
+
+    if not usuario_sistema or not usuario_sistema.ativo:
+        return jsonify({
+            "erro": "Usuário não autorizado."
+        }), 401
+
+    if str(usuario_sistema.perfil).strip().lower() != "motorista":
+        return jsonify({
+            "erro": "Acesso permitido somente para motoristas."
+        }), 403
+
+    motorista = Motorista.query.filter_by(
+        usuario=usuario_sistema.usuario
+    ).first()
+
+    if not motorista:
+        return jsonify({
+            "erro": "O usuário não está vinculado a um motorista."
+        }), 404
+
+    if str(motorista.status).strip().lower() == "inativo":
+        return jsonify({
+            "erro": "Este motorista está inativo."
+        }), 403
+
+    viagem = Viagem.query.filter_by(
+        id=id,
+        motorista_id=motorista.id
+    ).first()
+
+    if not viagem:
+        return jsonify({
+            "erro": (
+                "Viagem não encontrada ou não pertence "
+                "a este motorista."
+            )
+        }), 404
+
+    localizacoes = LocalizacaoViagem.query.filter_by(
+        viagem_id=viagem.id
+    ).order_by(
+        LocalizacaoViagem.data_registro.desc()
+    ).all()
+
+    lista = []
+
+    for item in localizacoes:
+        lista.append({
+            "id": item.id,
+            "localizacao": item.localizacao,
+            "observacao": item.observacao,
+            "data_registro": formatar_data_brasilia(
+    item.data_registro
+)
+        })
+
+    return jsonify(lista), 200
+
+@app.route(
+    "/api/motorista/minhas-viagens/<int:id>/localizacoes",
+    methods=["POST"]
+)
+@jwt_required()
+def api_criar_localizacao_motorista(id):
+    usuario_id = int(get_jwt_identity())
+
+    usuario_sistema = db.session.get(
+        UsuarioSistema,
+        usuario_id
+    )
+
+    if not usuario_sistema or not usuario_sistema.ativo:
+        return jsonify({
+            "erro": "Usuário não autorizado."
+        }), 401
+
+    if str(usuario_sistema.perfil).strip().lower() != "motorista":
+        return jsonify({
+            "erro": "Acesso permitido somente para motoristas."
+        }), 403
+
+    motorista = Motorista.query.filter_by(
+        usuario=usuario_sistema.usuario
+    ).first()
+
+    if not motorista:
+        return jsonify({
+            "erro": "O usuário não está vinculado a um motorista."
+        }), 404
+
+    if str(motorista.status).strip().lower() == "inativo":
+        return jsonify({
+            "erro": "Este motorista está inativo."
+        }), 403
+
+    viagem = Viagem.query.filter_by(
+        id=id,
+        motorista_id=motorista.id
+    ).first()
+
+    if not viagem:
+        return jsonify({
+            "erro": (
+                "Viagem não encontrada ou não pertence "
+                "a este motorista."
+            )
+        }), 404
+
+    dados = request.get_json(silent=True) or {}
+
+    localizacao_texto = str(
+        dados.get("localizacao", "")
+    ).strip()
+
+    observacao = str(
+        dados.get("observacao", "")
+    ).strip()
+
+    if not localizacao_texto:
+        return jsonify({
+            "erro": "Informe a localização."
+        }), 400
+
+    try:
+        localizacao = LocalizacaoViagem(
+            viagem_id=viagem.id,
+            localizacao=localizacao_texto,
+            observacao=observacao
+        )
+
+        db.session.add(localizacao)
+
+        historico = HistoricoViagem(
+            viagem_id=viagem.id,
+            status="Localização atualizada",
+            observacao=localizacao_texto
+        )
+
+        db.session.add(historico)
+
+        db.session.commit()
+
+        return jsonify({
+            "mensagem": "Localização registrada com sucesso!"
+        }), 201
+
+    except Exception as erro:
+        db.session.rollback()
+
+        print(
+            "ERRO AO REGISTRAR LOCALIZAÇÃO DO MOTORISTA:",
+            erro
+        )
+
+        return jsonify({
+            "erro": "Não foi possível registrar a localização."
+        }), 500
+    
+@app.route("/api/admin/relatorios/financeiro/pdf")
+@jwt_required()
+def api_relatorio_financeiro_pdf():
+    usuario_id = int(get_jwt_identity())
+    usuario = db.session.get(UsuarioSistema, usuario_id)
+
+    if not usuario or not usuario.ativo:
+        return jsonify({"erro": "Usuário não autorizado."}), 401
+
+    if str(usuario.perfil).strip().lower() != "administrador":
+        return jsonify({
+            "erro": "Você não possui permissão para acessar relatórios financeiros."
+        }), 403
+
+    buffer = io.BytesIO()
+
+    pdf = canvas.Canvas(
+        buffer,
+        pagesize=A4
+    )
+
+    pdf.setTitle(
+        "Relatório Financeiro"
+    )
+
+    pdf.setFont(
+        "Helvetica-Bold",
+        16
+    )
+
+    pdf.drawString(
+        50,
+        800,
+        "TRANSPORTADORA RAMOS"
+    )
+
+    pdf.setFont(
+        "Helvetica",
+        12
+    )
+
+    pdf.drawString(
+        50,
+        780,
+        "Relatório Financeiro"
+    )
+
+    cargas = Rastreamento.query.all()
+
+    faturamento_total = 0
+    total_pago = 0
+    total_pendente = 0
+
+    for carga in cargas:
+
+        valor = carga.valor_frete or 0
+
+        faturamento_total += valor
+
+        if carga.status_pagamento == "Pago":
+            total_pago += valor
+        else:
+            total_pendente += valor
+
+    ticket_medio = 0
+
+    if len(cargas) > 0:
+        ticket_medio = (
+            faturamento_total /
+            len(cargas)
+        )
+
+    y = 720
+
+    pdf.drawString(
+        50,
+        y,
+        f"Faturamento Total: R$ {faturamento_total:,.2f}"
+    )
+
+    y -= 30
+
+    pdf.drawString(
+        50,
+        y,
+        f"Total Pago: R$ {total_pago:,.2f}"
+    )
+
+    y -= 30
+
+    pdf.drawString(
+        50,
+        y,
+        f"Total Pendente: R$ {total_pendente:,.2f}"
+    )
+
+    y -= 30
+
+    pdf.drawString(
+        50,
+        y,
+        f"Ticket Médio: R$ {ticket_medio:,.2f}"
+    )
+
+    pdf.save()
+
+    buffer.seek(0)
+
+    return send_file(
+        buffer,
+        as_attachment=True,
+        download_name="relatorio_financeiro.pdf",
+        mimetype="application/pdf"
+    )  
+    
+@app.route("/api/admin/busca")
+def api_busca_global():
+
+    termo = request.args.get("q", "").strip()
+
+    if not termo:
+        return {
+            "cargas": [],
+            "motoristas": [],
+            "veiculos": []
+        }
+
+    cargas = Rastreamento.query.filter(
+        db.or_(
+            Rastreamento.codigo.ilike(f"%{termo}%"),
+            Rastreamento.cliente.ilike(f"%{termo}%")
+        )
+    ).all()
+
+    motoristas = Motorista.query.filter(
+        Motorista.nome.ilike(f"%{termo}%")
+    ).all()
+
+    veiculos = Veiculo.query.filter(
+        db.or_(
+            Veiculo.placa.ilike(f"%{termo}%"),
+            Veiculo.modelo.ilike(f"%{termo}%")
+        )
+    ).all()
+
+    return {
+        "cargas": [
+            {
+                "id": c.id,
+                "codigo": c.codigo,
+                "cliente": c.cliente,
+                "status": c.status
+            }
+            for c in cargas
+        ],
+
+        "motoristas": [
+            {
+                "id": m.id,
+                "nome": m.nome
+            }
+            for m in motoristas
+        ],
+
+        "veiculos": [
+            {
+                "id": v.id,
+                "placa": v.placa,
+                "modelo": v.modelo
+            }
+            for v in veiculos
+        ]
+    } 
+    
+@app.route("/api/admin/clientes/top-cargas", methods=["GET"])
+@jwt_required()
+def api_top_clientes_cargas():
+    usuario_id = int(get_jwt_identity())
+
+    usuario = db.session.get(
+        UsuarioSistema,
+        usuario_id
+    )
+
+    if not usuario or not usuario.ativo:
+        return jsonify({
+            "erro": "Usuário não autorizado."
+        }), 401
+
+    if str(usuario.perfil).strip().lower() not in [
+        "administrador",
+        "operador"
+    ]:
+        return jsonify({
+            "erro": "Você não possui permissão para acessar indicadores de clientes."
+        }), 403
+
+    resultados = db.session.query(
+        Rastreamento.cliente,
+        db.func.count(Rastreamento.id)
+    ).group_by(
+        Rastreamento.cliente
+    ).order_by(
+        db.func.count(Rastreamento.id).desc()
+    ).limit(5).all()
+
+    lista = []
+
+    for cliente, total in resultados:
+        lista.append({
+            "cliente": cliente,
+            "total": total
+        })
+
+    return lista  
+
+@app.route("/api/admin/viagens/evolucao", methods=["GET"])
+@jwt_required()
+def api_evolucao_viagens():
+    usuario_id = int(get_jwt_identity())
+    usuario = db.session.get(UsuarioSistema, usuario_id)
+
+    if not usuario or not usuario.ativo:
+        return jsonify({"erro": "Usuário não autorizado."}), 401
+
+    if str(usuario.perfil).strip().lower() not in [
+        "administrador", "operador"
+    ]:
+        return jsonify({
+            "erro": "Você não possui permissão para acessar indicadores de viagens."
+        }), 403
+
+    viagens = Viagem.query.all()
+
+    meses = {}
+
+    nomes_meses = [
+        "Jan", "Fev", "Mar", "Abr", "Mai", "Jun",
+        "Jul", "Ago", "Set", "Out", "Nov", "Dez"
+    ]
+
+    for viagem in viagens:
+        if viagem.data_criacao:
+            mes = nomes_meses[viagem.data_criacao.month - 1]
+
+            if mes not in meses:
+                meses[mes] = 0
+
+            meses[mes] += 1
+
+    lista = []
+
+    for mes, total in meses.items():
+        lista.append({
+            "mes": mes,
+            "total": total
+        })
+
+    return lista   
+
+@app.route("/api/admin/top-rotas", methods=["GET"])
+def api_top_rotas():
+    resultados = db.session.query(
+        Viagem.origem,
+        Viagem.destino,
+        db.func.count(Viagem.id)
+    ).group_by(
+        Viagem.origem,
+        Viagem.destino
+    ).order_by(
+        db.func.count(Viagem.id).desc()
+    ).limit(5).all()
+
+    lista = []
+
+    for origem, destino, total in resultados:
+        lista.append({
+            "rota": f"{origem} → {destino}",
+            "total": total
+        })
+
+    return lista  
+
+@app.route(
+    "/api/admin/motoristas/<int:motorista_id>/ativar",
+    methods=["PUT"]
+)
+@jwt_required()
+def api_ativar_motorista(motorista_id):
+    usuario_id = int(get_jwt_identity())
+
+    usuario = db.session.get(
+        UsuarioSistema,
+        usuario_id
+    )
+
+    if not usuario or not usuario.ativo:
+        return jsonify({
+            "erro": "Usuário não autorizado."
+        }), 401
+
+    if str(usuario.perfil).strip().lower() != "administrador":
+        return jsonify({
+            "erro": "Somente administradores podem ativar motoristas."
+        }), 403
+
+    motorista = db.session.get(
+        Motorista,
+        motorista_id
+    )
+
+    if not motorista:
+        return jsonify({
+            "erro": "Motorista não encontrado."
+        }), 404
+
+    motorista.status = "Ativo"
+
+    db.session.commit()
+
+    return jsonify({
+        "mensagem": "Motorista ativado com sucesso!",
+        "motorista": {
+            "id": motorista.id,
+            "nome": motorista.nome,
+            "status": motorista.status
+        }
+    }), 200
+
+@app.route(
+    "/api/admin/motoristas/<int:motorista_id>/inativar",
+    methods=["PUT"]
+)
+@jwt_required()
+def api_inativar_motorista(motorista_id):
+    usuario_id = int(get_jwt_identity())
+
+    usuario = UsuarioSistema.query.get(usuario_id)
+
+    if not usuario or not usuario.ativo:
+        return jsonify({
+            "erro": "Usuário não autorizado."
+        }), 401
+
+    if str(usuario.perfil).strip().lower() != "administrador":
+        return jsonify({
+            "erro": "Somente administradores podem inativar motoristas."
+        }), 403
+
+    motorista = Motorista.query.get(motorista_id)
+
+    if not motorista:
+        return jsonify({
+            "erro": "Motorista não encontrado."
+        }), 404
+
+    status_viagem_ativos = [
+        "Planejada",
+        "Em andamento",
+        "Em coleta",
+        "Carregando",
+        "Em trânsito",
+        "Parada operacional",
+        "Saiu para entrega"
+    ]
+
+    status_carga_ativos = [
+        "Pendente",
+        "Programada",
+        "Em preparação",
+        "Carregando",
+        "Em coleta",
+        "Em trânsito",
+        "Parada operacional",
+        "Saiu para entrega"
+    ]
+
+    viagem_ativa = Viagem.query.filter(
+        Viagem.motorista_id == motorista.id,
+        Viagem.status.in_(status_viagem_ativos)
+    ).first()
+
+    carga_ativa = Rastreamento.query.filter(
+        Rastreamento.motorista_id == motorista.id,
+        Rastreamento.status.in_(status_carga_ativos)
+    ).first()
+
+    motorista_em_viagem = (
+        str(motorista.disponibilidade).strip().lower()
+        == "em viagem"
+    )
+
+    if viagem_ativa or carga_ativa or motorista_em_viagem:
+        return jsonify({
+            "erro": (
+                "Não é possível inativar este motorista enquanto "
+                "houver viagem ou carga ativa."
+            )
+        }), 409
+
+    motorista.status = "Inativo"
+
+    db.session.commit()
+
+    return jsonify({
+        "mensagem": "Motorista inativado com sucesso!"
+    }), 200
+
+@app.route("/api/admin/motoristas/<int:id>", methods=["GET"])
+@jwt_required()
+def api_detalhe_motorista(id):
+    usuario_id = int(get_jwt_identity())
+
+    usuario = db.session.get(
+        UsuarioSistema,
+        usuario_id
+    )
+
+    if not usuario or not usuario.ativo:
+        return jsonify({
+            "erro": "Usuário não autorizado."
+        }), 401
+
+    if str(usuario.perfil).strip().lower() not in [
+        "administrador",
+        "operador"
+    ]:
+        return jsonify({
+            "erro": "Você não possui permissão para consultar motoristas."
+        }), 403
+
+    motorista = Motorista.query.get_or_404(id)
+
+    return {
+        "id": motorista.id,
+        "nome": motorista.nome,
+        "cpf": motorista.cpf,
+        "cnh": motorista.cnh,
+        "categoria_cnh": getattr(motorista, "categoria_cnh", ""),
+        "telefone": motorista.telefone,
+        "email": motorista.email,
+        "status": motorista.status,
+    }
+    
+@app.route("/api/admin/motoristas/<int:id>", methods=["PUT"])
+@jwt_required()
+def api_editar_motorista(id):
+    usuario_id = int(get_jwt_identity())
+
+    usuario = db.session.get(
+        UsuarioSistema,
+        usuario_id
+    )
+
+    if not usuario or not usuario.ativo:
+        return jsonify({
+            "erro": "Usuário não autorizado."
+        }), 401
+
+    perfil_usuario = str(usuario.perfil).strip().lower()
+
+    if perfil_usuario not in [
+        "administrador",
+        "operador"
+    ]:
+        return jsonify({
+            "erro": "Você não possui permissão para editar motoristas."
+        }), 403
+
+    motorista = Motorista.query.get_or_404(id)
+
+    dados = request.get_json(silent=True) or {}
+
+    novo_status = str(
+        dados.get("status", motorista.status)
+    ).strip()
+
+    if (
+        perfil_usuario == "administrador"
+        and novo_status.lower() == "inativo"
+        and str(motorista.status).strip().lower() != "inativo"
+    ):
+        status_viagem_ativos = [
+            "Planejada",
+            "Em andamento",
+            "Em coleta",
+            "Carregando",
+            "Em trânsito",
+            "Parada operacional",
+            "Saiu para entrega"
+        ]
+
+        status_carga_ativos = [
+            "Pendente",
+            "Programada",
+            "Em preparação",
+            "Carregando",
+            "Em coleta",
+            "Em trânsito",
+            "Parada operacional",
+            "Saiu para entrega"
+        ]
+
+        viagem_ativa = Viagem.query.filter(
+            Viagem.motorista_id == motorista.id,
+            Viagem.status.in_(status_viagem_ativos)
+        ).first()
+
+        carga_ativa = Rastreamento.query.filter(
+            Rastreamento.motorista_id == motorista.id,
+            Rastreamento.status.in_(status_carga_ativos)
+        ).first()
+
+        motorista_em_viagem = (
+            str(motorista.disponibilidade).strip().lower()
+            == "em viagem"
+        )
+
+        if viagem_ativa or carga_ativa or motorista_em_viagem:
+            return jsonify({
+                "erro": (
+                    "Não é possível inativar este motorista enquanto "
+                    "houver viagem ou carga ativa."
+                )
+            }), 409
+
+    motorista.nome = dados.get("nome", motorista.nome)
+    motorista.cpf = dados.get("cpf", motorista.cpf)
+    motorista.cnh = dados.get("cnh", motorista.cnh)
+    if hasattr(motorista, "categoria_cnh"):
+     motorista.categoria_cnh = dados.get("categoria_cnh", motorista.categoria_cnh)
+    motorista.telefone = dados.get(
+        "telefone",
+        motorista.telefone
+    )
+    motorista.email = dados.get(
+        "email",
+        motorista.email
+    )
+    if perfil_usuario == "administrador":
+        motorista.status = novo_status
+
+    db.session.commit()
+
+    return {
+        "mensagem": "Motorista atualizado com sucesso!"
+    }
+    
+@app.route(
+    "/api/motorista/minhas-viagens/<int:id>",
+    methods=["GET"]
+)
+@jwt_required()
+def api_detalhe_viagem_motorista(id):
+    usuario_id = int(get_jwt_identity())
+
+    usuario_sistema = db.session.get(
+        UsuarioSistema,
+        usuario_id
+    )
+
+    if not usuario_sistema or not usuario_sistema.ativo:
+        return jsonify({
+            "erro": "Usuário não autorizado."
+        }), 401
+
+    if str(usuario_sistema.perfil).strip().lower() != "motorista":
+        return jsonify({
+            "erro": "Acesso permitido somente para motoristas."
+        }), 403
+
+    motorista = Motorista.query.filter_by(
+        usuario=usuario_sistema.usuario
+    ).first()
+
+    if not motorista:
+        return jsonify({
+            "erro": "O usuário não está vinculado a um motorista."
+        }), 404
+
+    if str(motorista.status).strip().lower() == "inativo":
+        return jsonify({
+            "erro": "Este motorista está inativo."
+        }), 403
+
+    viagem = Viagem.query.filter_by(
+        id=id,
+        motorista_id=motorista.id
+    ).first()
+
+    if not viagem:
+        return jsonify({
+            "erro": (
+                "Viagem não encontrada ou não pertence "
+                "a este motorista."
+            )
+        }), 404
+
+    return jsonify({
+        "id": viagem.id,
+        "codigo_carga": (
+            viagem.carga.codigo
+            if viagem.carga
+            else ""
+        ),
+        "cliente": (
+            viagem.carga.cliente
+            if viagem.carga
+            else ""
+        ),
+        "motorista": (
+            viagem.motorista.nome
+            if viagem.motorista
+            else ""
+        ),
+        "veiculo": (
+            viagem.veiculo.placa
+            if viagem.veiculo
+            else ""
+        ),
+        "origem": viagem.origem,
+        "destino": viagem.destino,
+        "status": viagem.status,
+        "data_criacao": (
+            viagem.data_criacao.strftime(
+                "%d/%m/%Y %H:%M"
+            )
+            if viagem.data_criacao
+            else ""
+        ),
+        "data_criacao_iso": (
+            viagem.data_criacao.isoformat()
+            if viagem.data_criacao
+            else None
+        )
+    }), 200
+    
+@app.route(
+    "/api/motorista/minhas-viagens/<int:id>/historico",
+    methods=["GET"]
+)
+@jwt_required()
+def api_historico_viagem_motorista(id):
+    usuario_id = int(get_jwt_identity())
+
+    usuario_sistema = db.session.get(
+        UsuarioSistema,
+        usuario_id
+    )
+
+    if not usuario_sistema or not usuario_sistema.ativo:
+        return jsonify({
+            "erro": "Usuário não autorizado."
+        }), 401
+
+    if str(usuario_sistema.perfil).strip().lower() != "motorista":
+        return jsonify({
+            "erro": "Acesso permitido somente para motoristas."
+        }), 403
+
+    motorista = Motorista.query.filter_by(
+        usuario=usuario_sistema.usuario
+    ).first()
+
+    if not motorista:
+        return jsonify({
+            "erro": "O usuário não está vinculado a um motorista."
+        }), 404
+
+    if str(motorista.status).strip().lower() == "inativo":
+        return jsonify({
+            "erro": "Este motorista está inativo."
+        }), 403
+
+    viagem = Viagem.query.filter_by(
+        id=id,
+        motorista_id=motorista.id
+    ).first()
+
+    if not viagem:
+        return jsonify({
+            "erro": "Viagem não encontrada ou não pertence a este motorista."
+        }), 404
+
+    historicos = HistoricoViagem.query.filter_by(
+        viagem_id=viagem.id
+    ).order_by(
+        HistoricoViagem.data_evento.desc()
+    ).all()
+
+    lista = []
+
+    for item in historicos:
+     lista.append({
+        "id": item.id,
+        "status": item.status,
+        "observacao": item.observacao,
+        "data_evento": formatar_data_brasilia(
+            item.data_evento
+        )
+    })
+    return jsonify(lista), 200
+
+@app.route(
+    "/api/motorista/minhas-viagens/<int:id>/ocorrencias",
+    methods=["POST"]
+)
+@jwt_required()
+def api_criar_ocorrencia_motorista(id):
+    usuario_id = int(get_jwt_identity())
+
+    usuario_sistema = db.session.get(
+        UsuarioSistema,
+        usuario_id
+    )
+
+    if not usuario_sistema or not usuario_sistema.ativo:
+        return jsonify({
+            "erro": "Usuário não autorizado."
+        }), 401
+
+    if str(usuario_sistema.perfil).strip().lower() != "motorista":
+        return jsonify({
+            "erro": "Acesso permitido somente para motoristas."
+        }), 403
+
+    motorista = Motorista.query.filter_by(
+        usuario=usuario_sistema.usuario
+    ).first()
+
+    if not motorista:
+        return jsonify({
+            "erro": "O usuário não está vinculado a um motorista."
+        }), 404
+
+    if str(motorista.status).strip().lower() == "inativo":
+        return jsonify({
+            "erro": "Este motorista está inativo."
+        }), 403
+
+    viagem = Viagem.query.filter_by(
+        id=id,
+        motorista_id=motorista.id
+    ).first()
+
+    if not viagem:
+        return jsonify({
+            "erro": (
+                "Viagem não encontrada ou não pertence "
+                "a este motorista."
+            )
+        }), 404
+
+    dados = request.get_json(silent=True) or {}
+
+    descricao = str(
+        dados.get("descricao", "")
+    ).strip()
+
+    if not descricao:
+        return jsonify({
+            "erro": "Informe a descrição da ocorrência."
+        }), 400
+
+    try:
+        ocorrencia = OcorrenciaViagem(
+            viagem_id=viagem.id,
+            descricao=descricao
+        )
+
+        db.session.add(ocorrencia)
+
+        historico = HistoricoViagem(
+            viagem_id=viagem.id,
+            status="Ocorrência",
+            observacao=descricao
+        )
+
+        db.session.add(historico)
+
+        db.session.commit()
+
+        return jsonify({
+            "mensagem": "Ocorrência registrada!"
+        }), 201
+
+    except Exception as erro:
+        db.session.rollback()
+
+        print(
+            "ERRO AO REGISTRAR OCORRÊNCIA DO MOTORISTA:",
+            erro
+        )
+
+        return jsonify({
+            "erro": "Não foi possível registrar a ocorrência."
+        }), 500
+
+
+@app.route("/api/admin/veiculos/<int:id>/inativar", methods=["PUT"])
+@jwt_required()
+def api_inativar_veiculo(id):
+    usuario_id = int(get_jwt_identity())
+
+    usuario = db.session.get(
+        UsuarioSistema,
+        usuario_id
+    )
+
+    if not usuario or not usuario.ativo:
+        return jsonify({
+            "erro": "Usuário não autorizado."
+        }), 401
+
+    if str(usuario.perfil).strip().lower() != "administrador":
+        return jsonify({
+            "erro": "Somente administradores podem inativar veículos."
+        }), 403
+
+    veiculo = Veiculo.query.get_or_404(id)
+
+    veiculo.status = "Inativo"
+
+    db.session.commit()
+
+    return {"mensagem": "Veículo inativado com sucesso!"}
+
+@app.route("/api/admin/clientes/<int:id>/inativar", methods=["PUT"])
+@jwt_required()
+def api_inativar_cliente(id):
+    usuario_id = int(get_jwt_identity())
+
+    usuario = db.session.get(
+        UsuarioSistema,
+        usuario_id
+    )
+
+    if not usuario or not usuario.ativo:
+        return jsonify({
+            "erro": "Usuário não autorizado."
+        }), 401
+
+    if str(usuario.perfil).strip().lower() != "administrador":
+        return jsonify({
+            "erro": "Somente administradores podem inativar clientes."
+        }), 403
+
+    cliente = Cliente.query.get_or_404(id)
+
+    cliente.ativo = False
+
+    db.session.commit()
+
+    return {"mensagem": "Cliente inativado com sucesso!"}
+
+@app.route("/api/admin/veiculos/<int:id>", methods=["GET"])
+@jwt_required()
+def api_detalhe_veiculo(id):
+    usuario_id = int(get_jwt_identity())
+
+    usuario = db.session.get(
+        UsuarioSistema,
+        usuario_id
+    )
+
+    if not usuario or not usuario.ativo:
+        return jsonify({
+            "erro": "Usuário não autorizado."
+        }), 401
+
+    if str(usuario.perfil).strip().lower() not in [
+        "administrador",
+        "operador"
+    ]:
+        return jsonify({
+            "erro": "Você não possui permissão para consultar veículos."
+        }), 403
+
+    veiculo = Veiculo.query.get_or_404(id)
+
+    return {
+        "id": veiculo.id,
+        "placa": veiculo.placa,
+        "modelo": veiculo.modelo,
+        "marca": veiculo.marca,
+        "tipo": veiculo.tipo,
+        "ano": veiculo.ano,
+        "capacidade": veiculo.capacidade,
+        "status": veiculo.status
+    }
+    
+@app.route("/api/admin/veiculos/<int:id>", methods=["PUT"])
+@jwt_required()
+def api_editar_veiculo(id):
+    usuario_id = int(get_jwt_identity())
+
+    usuario = db.session.get(
+        UsuarioSistema,
+        usuario_id
+    )
+
+    if not usuario or not usuario.ativo:
+        return jsonify({
+            "erro": "Usuário não autorizado."
+        }), 401
+
+    perfil_usuario = str(usuario.perfil).strip().lower()
+
+    if perfil_usuario not in [
+        "administrador",
+        "operador"
+    ]:
+        return jsonify({
+            "erro": "Você não possui permissão para editar veículos."
+        }), 403
+
+    veiculo = Veiculo.query.get_or_404(id)
+    dados = request.get_json()
+
+    status_atual = str(veiculo.status or "").strip()
+    novo_status = str(
+        dados.get("status", veiculo.status) or ""
+    ).strip()
+
+    if (
+        perfil_usuario == "operador"
+        and novo_status.lower() != status_atual.lower()
+        and (
+            novo_status.lower() == "inativo"
+            or status_atual.lower() == "inativo"
+        )
+    ):
+        return jsonify({
+            "erro": (
+                "Você não possui permissão para ativar "
+                "ou inativar veículos."
+            )
+        }), 403
+
+    veiculo.placa = dados.get("placa", veiculo.placa)
+    veiculo.modelo = dados.get("modelo", veiculo.modelo)
+    veiculo.marca = dados.get("marca", veiculo.marca)
+    veiculo.tipo = dados.get("tipo", veiculo.tipo)
+    veiculo.ano = dados.get("ano", veiculo.ano)
+    veiculo.capacidade = dados.get("capacidade", veiculo.capacidade)
+    veiculo.status = novo_status
+
+    db.session.commit()
+
+    return {"mensagem": "Veículo atualizado com sucesso!"}
+
+@app.route("/api/admin/clientes/<int:id>", methods=["GET"])
+@jwt_required()
+def api_detalhe_cliente(id):
+    usuario_id = int(get_jwt_identity())
+
+    usuario = db.session.get(
+        UsuarioSistema,
+        usuario_id
+    )
+
+    if not usuario or not usuario.ativo:
+        return jsonify({
+            "erro": "Usuário não autorizado."
+        }), 401
+
+    if str(usuario.perfil).strip().lower() not in [
+        "administrador",
+        "operador"
+    ]:
+        return jsonify({
+            "erro": "Você não possui permissão para consultar clientes."
+        }), 403
+
+    cliente = Cliente.query.get_or_404(id)
+
+    return {
+        "id": cliente.id,
+        "razao_social": cliente.razao_social,
+        "nome_fantasia": cliente.nome_fantasia,
+        "documento": cliente.documento,
+        "responsavel": cliente.responsavel,
+         "email": cliente.email,
+        "telefone": cliente.telefone,
+        "cidade": cliente.cidade,
+        "estado": cliente.estado,
+        "ativo": cliente.ativo,
+    }
+    
+@app.route("/api/admin/clientes/<int:id>", methods=["PUT"])
+@jwt_required()
+def api_editar_cliente(id):
+    usuario_id = int(get_jwt_identity())
+
+    usuario = db.session.get(
+        UsuarioSistema,
+        usuario_id
+    )
+
+    if not usuario or not usuario.ativo:
+        return jsonify({
+            "erro": "Usuário não autorizado."
+        }), 401
+
+    perfil_usuario = str(usuario.perfil).strip().lower()
+
+    if perfil_usuario not in [
+        "administrador",
+        "operador"
+    ]:
+        return jsonify({
+            "erro": "Você não possui permissão para editar clientes."
+        }), 403
+
+    cliente = Cliente.query.get_or_404(id)
+    dados = request.get_json()
+
+    cliente.razao_social = dados.get("razao_social", cliente.razao_social)
+    cliente.nome_fantasia = dados.get("nome_fantasia", cliente.nome_fantasia)
+    cliente.documento = dados.get("documento", cliente.documento)
+    cliente.responsavel = dados.get("responsavel", cliente.responsavel)
+    cliente.email = dados.get("email", cliente.email)
+    cliente.telefone = dados.get("telefone", cliente.telefone)
+    cliente.cidade = dados.get("cidade", cliente.cidade)
+    cliente.estado = dados.get("estado", cliente.estado)
+
+    if perfil_usuario == "administrador":
+        cliente.ativo = dados.get("ativo", cliente.ativo)
+
+    db.session.commit()
+
+    return {"mensagem": "Cliente atualizado com sucesso!"}
+
+@app.route("/api/admin/relatorios/resumo", methods=["GET"])
+def api_relatorios_resumo():
+    total_clientes = Cliente.query.count()
+    clientes_ativos = Cliente.query.filter_by(ativo=True).count()
+    clientes_inativos = Cliente.query.filter_by(ativo=False).count()
+
+    total_motoristas = Motorista.query.count()
+    motoristas_ativos = Motorista.query.filter_by(status="Ativo").count()
+    motoristas_inativos = Motorista.query.filter_by(status="Inativo").count()
+
+    total_veiculos = Veiculo.query.count()
+    veiculos_disponiveis = Veiculo.query.filter_by(status="Disponível").count()
+    veiculos_manutencao = Veiculo.query.filter_by(status="Manutenção").count()
+    veiculos_inativos = Veiculo.query.filter_by(status="Inativo").count()
+
+    total_viagens = Viagem.query.count()
+    viagens_planejadas = Viagem.query.filter_by(status="Planejada").count()
+    viagens_transito = Viagem.query.filter_by(status="Em trânsito").count()
+    viagens_entregues = Viagem.query.filter_by(status="Entregue").count()
+
+    return {
+        "clientes": {
+            "total": total_clientes,
+            "ativos": clientes_ativos,
+            "inativos": clientes_inativos
+        },
+        "motoristas": {
+            "total": total_motoristas,
+            "ativos": motoristas_ativos,
+            "inativos": motoristas_inativos
+        },
+        "veiculos": {
+            "total": total_veiculos,
+            "disponiveis": veiculos_disponiveis,
+            "manutencao": veiculos_manutencao,
+            "inativos": veiculos_inativos
+        },
+        "viagens": {
+            "total": total_viagens,
+            "planejadas": viagens_planejadas,
+            "em_transito": viagens_transito,
+            "entregues": viagens_entregues
+        }
+    }
+    
+    
+@app.route(
+    "/api/admin/usuarios/<int:id>/inativar",
+    methods=["POST"]
+)
+@jwt_required()
+def api_inativar_usuario(id):
+    usuario = db.session.get(
+        UsuarioSistema,
+        id
+    )
+
+    if not usuario:
+        return jsonify({
+            "erro": "Usuário não encontrado."
+        }), 404
+
+    usuario_logado_id = int(get_jwt_identity())
+    usuario_logado = db.session.get(
+        UsuarioSistema,
+        usuario_logado_id
+    )
+
+    if not usuario_logado or not usuario_logado.ativo:
+        return jsonify({
+            "erro": "Usuário autenticado não autorizado."
+        }), 401
+
+    if str(usuario_logado.perfil).strip().lower() != "administrador":
+        return jsonify({
+            "erro": "Apenas administradores podem inativar usuários."
+        }), 403
+
+    if usuario.id == usuario_logado.id:
+        return jsonify({
+            "erro": "Você não pode inativar o próprio usuário."
+        }), 400
+
+    if not usuario.ativo:
+        return jsonify({
+            "mensagem": "Este usuário já está inativo."
+        }), 200
+
+    try:
+        dados_antes = {
+            "ativo": usuario.ativo
+        }
+
+        usuario.ativo = False
+
+        db.session.commit()
+
+        registrar_log(
+            acao="Inativação de usuário",
+            detalhes=(
+                f"O usuário {usuario_logado.nome} "
+                f"inativou {usuario.nome}."
+            ),
+            modulo="Usuários",
+            entidade="UsuarioSistema",
+            entidade_id=usuario.id,
+            antes=dados_antes,
+            depois={
+                "ativo": usuario.ativo
+            },
+            usuario_id=usuario_logado.id,
+            usuario_nome=usuario_logado.nome,
+            perfil=usuario_logado.perfil
+        )
+
+        return jsonify({
+            "mensagem": "Usuário inativado com sucesso!"
+        }), 200
+
+    except Exception as erro:
+        db.session.rollback()
+
+        print(
+            "ERRO AO INATIVAR USUÁRIO:",
+            erro
+        )
+
+        return jsonify({
+            "erro": "Não foi possível inativar o usuário."
+        }), 500
+
+
+@app.route(
+    "/api/admin/usuarios/<int:id>",
+    methods=["GET"]
+)
+@jwt_required()
+def api_buscar_usuario(id):
+    usuario = db.session.get(
+        UsuarioSistema,
+        id
+    )
+
+    if not usuario:
+        return jsonify({
+            "erro": "Usuário não encontrado."
+        }), 404
+
+    return jsonify({
+        "id": usuario.id,
+        "nome": usuario.nome,
+        "usuario": usuario.usuario,
+        "email": usuario.email or "",
+        "perfil": usuario.perfil,
+        "ativo": usuario.ativo,
+    }), 200
+    
+@app.route(
+   "/api/admin/usuarios",
+    methods=["GET", "POST"]
+)
+@jwt_required()
+def api_admin_usuarios():
+    usuario_logado_id = int(get_jwt_identity())
+
+    usuario_logado = db.session.get(
+        UsuarioSistema,
+        usuario_logado_id
+    )
+
+    if not usuario_logado or not usuario_logado.ativo:
+        return jsonify({
+            "erro": "Usuário não autorizado."
+        }), 401
+
+    if str(usuario_logado.perfil).strip().lower() != "administrador":
+        return jsonify({
+            "erro": "Apenas administradores podem gerenciar usuários."
+        }), 403
+
+    if request.method == "GET":
+        usuarios = UsuarioSistema.query.order_by(
+            UsuarioSistema.data_criacao.desc()
+        ).all()
+
+        lista = []
+
+        for usuario in usuarios:
+            lista.append({
+                "id": usuario.id,
+                "nome": usuario.nome,
+                "email": usuario.email or "",
+                "usuario": usuario.usuario,
+                "perfil": usuario.perfil,
+                "ativo": usuario.ativo,
+                "data_criacao": (
+                    usuario.data_criacao.strftime(
+                        "%d/%m/%Y %H:%M"
+                    )
+                    if usuario.data_criacao
+                    else ""
+                )
+            })
+
+        return jsonify(lista), 200
+
+    dados = request.get_json(silent=True) or {}
+
+    nome = str(dados.get("nome", "")).strip()
+    email = str(dados.get("email", "")).strip().lower()
+    nome_usuario = str(
+        dados.get("usuario", "")
+    ).strip()
+    senha = str(dados.get("senha", "")).strip()
+    perfil = str(
+        dados.get("perfil", "operador")
+    ).strip().lower()
+
+    if not nome or not nome_usuario or not senha:
+        return jsonify({
+            "erro": "Nome, usuário e senha são obrigatórios."
+        }), 400
+
+    if len(senha) < 6:
+        return jsonify({
+            "erro": "A senha deve ter pelo menos 6 caracteres."
+        }), 400
+
+    perfis_permitidos = [
+        "administrador",
+        "operador",
+        "motorista",
+        "cliente"
+    ]
+
+    if perfil not in perfis_permitidos:
+        return jsonify({
+            "erro": "Perfil inválido."
+        }), 400
+
+    usuario_existente = UsuarioSistema.query.filter_by(
+        usuario=nome_usuario
+    ).first()
+
+    if usuario_existente:
+        return jsonify({
+            "erro": "Este nome de usuário já está cadastrado."
+        }), 409
+
+    if email:
+        email_existente = UsuarioSistema.query.filter_by(
+            email=email
+        ).first()
+
+        if email_existente:
+            return jsonify({
+                "erro": "Este e-mail já está cadastrado no sistema."
+            }), 409
+
+        if perfil == "cliente":
+            cliente_existente = ClienteUsuario.query.filter_by(
+                email=email
+            ).first()
+
+            if cliente_existente:
+                return jsonify({
+                    "erro": (
+                        "Já existe um cliente cadastrado "
+                        "com este e-mail."
+                    )
+                }), 409
+
+    try:
+        novo_usuario = UsuarioSistema(
+            nome=nome,
+            email=email,
+            usuario=nome_usuario,
+            senha=senha,
+            perfil=perfil,
+            ativo=True
+        )
+
+        db.session.add(novo_usuario)
+        db.session.flush()
+
+        if perfil == "cliente":
+            cliente_login = ClienteUsuario(
+                nome=nome,
+                empresa=nome,
+                email=email,
+                senha=senha,
+                ativo=True
+            )
+
+            db.session.add(cliente_login)
+
+        if perfil == "motorista":
+            motorista_existente = Motorista.query.filter_by(
+                usuario=nome_usuario
+            ).first()
+
+            if motorista_existente:
+                db.session.rollback()
+
+                return jsonify({
+                    "erro": (
+                        "Já existe um motorista com "
+                        "este nome de usuário."
+                    )
+                }), 409
+
+            motorista = Motorista(
+                nome=nome,
+                email=email,
+                usuario=nome_usuario,
+                senha=senha,
+                status="Ativo"
+            )
+
+            db.session.add(motorista)
+
+        db.session.commit()
+
+        return jsonify({
+            "mensagem": "Usuário criado com sucesso!"
+        }), 201
+
+    except Exception as erro:
+        db.session.rollback()
+
+        print(
+            "ERRO AO CRIAR USUÁRIO:",
+            erro
+        )
+
+        return jsonify({
+            "erro": "Não foi possível criar o usuário."
+        }), 500
+
+
+@app.route(
+    "/api/admin/usuarios/<int:id>",
+    methods=["PUT"]
+)
+@jwt_required()
+def api_editar_usuario(id):
+    usuario = db.session.get(
+        UsuarioSistema,
+        id
+    )
+
+    if not usuario:
+        return jsonify({
+            "erro": "Usuário não encontrado."
+        }), 404
+
+    dados = request.get_json(silent=True) or {}
+
+    usuario_logado_id = int(get_jwt_identity())
+
+    usuario_logado = db.session.get(
+        UsuarioSistema,
+        usuario_logado_id
+    )
+
+    if not usuario_logado or not usuario_logado.ativo:
+        return jsonify({
+            "erro": "Usuário autenticado não autorizado."
+        }), 401
+
+    if str(usuario_logado.perfil).strip().lower() != "administrador":
+        return jsonify({
+            "erro": "Apenas administradores podem editar usuários."
+        }), 403
+
+    nome = str(
+        dados.get("nome", usuario.nome)
+    ).strip()
+
+    nome_usuario = str(
+        dados.get("usuario", usuario.usuario)
+    ).strip()
+
+    email = str(
+        dados.get("email", usuario.email or "")
+    ).strip()
+
+    perfil = str(
+        dados.get("perfil", usuario.perfil)
+    ).strip().lower()
+
+    ativo = dados.get(
+        "ativo",
+        usuario.ativo
+    )
+
+    if not nome:
+        return jsonify({
+            "erro": "Informe o nome."
+        }), 400
+
+    if not nome_usuario:
+        return jsonify({
+            "erro": "Informe o usuário."
+        }), 400
+
+    perfis_permitidos = [
+        "administrador",
+        "operador",
+        "motorista",
+        "cliente"
+    ]
+
+    if perfil not in perfis_permitidos:
+        return jsonify({
+            "erro": "Perfil inválido."
+        }), 400
+
+    usuario_duplicado = UsuarioSistema.query.filter(
+        UsuarioSistema.usuario == nome_usuario,
+        UsuarioSistema.id != usuario.id
+    ).first()
+
+    if usuario_duplicado:
+        return jsonify({
+            "erro": "Este nome de usuário já está cadastrado."
+        }), 409
+
+    if email:
+        email_duplicado = UsuarioSistema.query.filter(
+            UsuarioSistema.email == email,
+            UsuarioSistema.id != usuario.id
+        ).first()
+
+        if email_duplicado:
+            return jsonify({
+                "erro": "Este e-mail já está cadastrado no sistema."
+            }), 409
+
+        cliente_email_duplicado = ClienteUsuario.query.filter(
+            ClienteUsuario.email == email
+        ).first()
+
+        if (
+            cliente_email_duplicado
+            and cliente_email_duplicado.email
+            != (usuario.email or "")
+        ):
+            return jsonify({
+                "erro": (
+                    "Este e-mail já está vinculado "
+                    "a outro cliente."
+                )
+            }), 409
+
+    redefinir_senha = bool(
+        dados.get("redefinir_senha", False)
+    )
+
+    nova_senha = str(
+        dados.get("nova_senha", "")
+    ).strip()
+
+    if redefinir_senha and len(nova_senha) < 6:
+        return jsonify({
+            "erro": (
+                "A nova senha deve ter "
+                "pelo menos 6 caracteres."
+            )
+        }), 400
+
+    dados_antes = {
+        "nome": usuario.nome,
+        "usuario": usuario.usuario,
+        "email": usuario.email or "",
+        "perfil": usuario.perfil,
+        "ativo": usuario.ativo,
+    }
+
+    try:
+        usuario.nome = nome
+        usuario.usuario = nome_usuario
+        usuario.email = email
+        usuario.perfil = perfil
+        usuario.ativo = bool(ativo)
+
+        if redefinir_senha:
+            usuario.senha = nova_senha
+
+        dados_depois = {
+            "nome": usuario.nome,
+            "usuario": usuario.usuario,
+            "email": usuario.email or "",
+            "perfil": usuario.perfil,
+            "ativo": usuario.ativo,
+            "senha_redefinida": redefinir_senha,
+        }
+
+        db.session.commit()
+
+        registrar_log(
+            acao="Edição de usuário",
+            detalhes=(
+                f"O usuário {usuario_logado.nome} "
+                f"alterou o cadastro de {usuario.nome}."
+            ),
+            modulo="Usuários",
+            entidade="UsuarioSistema",
+            entidade_id=usuario.id,
+            antes=dados_antes,
+            depois=dados_depois,
+            usuario_id=usuario_logado.id,
+            usuario_nome=usuario_logado.nome,
+            perfil=usuario_logado.perfil
+        )
+
+        return jsonify({
+            "mensagem": "Usuário atualizado com sucesso!"
+        }), 200
+
+    except Exception as erro:
+        db.session.rollback()
+
+        print(
+            "ERRO AO EDITAR USUÁRIO:",
+            erro
+        )
+
+        return jsonify({
+            "erro": "Não foi possível atualizar o usuário."
+        }), 500
+    
+    
+@app.route("/api/usuarios/<int:id>/alterar-senha", methods=["POST"])
+@jwt_required()
+def api_alterar_senha(id):
+    usuario = UsuarioSistema.query.get_or_404(id)
+    dados = request.get_json() or {}
+
+    senha_atual = dados.get("senha_atual", "").strip()
+    nova_senha = dados.get("nova_senha", "").strip()
+
+    if not senha_atual or not nova_senha:
+        return {
+            "erro": "Informe a senha atual e a nova senha."
+        }, 400
+
+    if usuario.senha != senha_atual:
+        return {
+            "erro": "Senha atual incorreta."
+        }, 400
+
+    if len(nova_senha) < 6:
+        return {
+            "erro": "A nova senha deve ter pelo menos 6 caracteres."
+        }, 400
+
+    if nova_senha == usuario.senha:
+        return {
+            "erro": "A nova senha deve ser diferente da senha atual."
+        }, 400
+
+    usuario.senha = nova_senha
+    db.session.commit()
+
+    return {
+        "mensagem": "Senha alterada com sucesso!"
+    }, 200
+    
+@app.route(
+    "/api/cliente/minhas-cargas",
+    methods=["GET"]
+)
+@jwt_required()
+def api_cliente_minhas_cargas():
+    usuario_id = int(get_jwt_identity())
+
+    usuario_sistema = db.session.get(
+        UsuarioSistema,
+        usuario_id
+    )
+
+    if not usuario_sistema or not usuario_sistema.ativo:
+        return jsonify({
+            "erro": "Usuário não autorizado."
+        }), 401
+
+    if str(usuario_sistema.perfil).strip().lower() != "cliente":
+        return jsonify({
+            "erro": "Acesso permitido somente para clientes."
+        }), 403
+
+    cliente_usuario = ClienteUsuario.query.filter_by(
+        email=usuario_sistema.email,
+        ativo=True
+    ).first()
+
+    if not cliente_usuario:
+        return jsonify({
+            "erro": "O usuário não está vinculado a um cliente."
+        }), 404
+
+    if cliente_usuario.cliente_id:
+        cargas = (
+            Rastreamento.query
+            .filter_by(
+                cliente_id=cliente_usuario.cliente_id
+            )
+            .order_by(
+                Rastreamento.ultima_atualizacao.desc()
+            )
+            .all()
+        )
+    else:
+        cargas = (
+            Rastreamento.query
+            .filter_by(
+                cliente=cliente_usuario.empresa
+            )
+            .order_by(
+                Rastreamento.ultima_atualizacao.desc()
+            )
+            .all()
+        )
+
+    lista = []
+
+    for carga in cargas:
+        lista.append({
+            "id": carga.id,
+            "codigo": carga.codigo,
+            "cliente": carga.cliente,
+            "status": carga.status,
+            "origem": getattr(
+                carga,
+                "origem",
+                carga.local_atual or ""
+            ),
+            "local_atual": carga.local_atual or "",
+            "destino": carga.destino or "",
+            "previsao_entrega": (
+                carga.previsao_entrega.strftime(
+                    "%d/%m/%Y %H:%M"
+                )
+                if getattr(carga, "previsao_entrega", None)
+                else ""
+            ),
+            "ultima_atualizacao": (
+                carga.ultima_atualizacao.strftime(
+                    "%d/%m/%Y %H:%M"
+                )
+                if carga.ultima_atualizacao
+                else ""
+            )
+        })
+
+    return jsonify(lista), 200
+    
+    
+@app.route("/api/cliente/minhas-cargas/<int:carga_id>", methods=["GET"])
+@jwt_required()
+def api_detalhe_carga_cliente_logado(carga_id):
+    usuario_id = int(get_jwt_identity())
+
+    usuario_sistema = UsuarioSistema.query.get_or_404(usuario_id)
+
+    if usuario_sistema.perfil.lower() != "cliente":
+        return {
+            "erro": "Acesso permitido somente para clientes."
+        }, 403
+
+    cliente_usuario = ClienteUsuario.query.filter_by(
+        email=usuario_sistema.email,
+        ativo=True
+    ).first()
+
+    if not cliente_usuario:
+        return {
+            "erro": "O usuário não está vinculado a um cliente."
+        }, 404
+
+    consulta = Rastreamento.query.filter_by(id=carga_id)
+
+    if cliente_usuario.cliente_id:
+        consulta = consulta.filter_by(
+            cliente_id=cliente_usuario.cliente_id
+        )
+    else:
+        consulta = consulta.filter_by(
+            cliente=cliente_usuario.empresa
+        )
+
+    carga = consulta.first()
+
+    if not carga:
+        return {
+            "erro": "Carga não encontrada ou não pertence a este cliente."
+        }, 404
+        
+        
+    historico = HistoricoRastreamento.query.filter_by(
+        rastreamento_id=carga.id
+        ).order_by(
+            HistoricoRastreamento.data_evento.asc()
+        ).all()
+
+    return jsonify({
+    "id": carga.id,
+    "codigo": carga.codigo,
+    "cliente": carga.cliente,
+    "status": carga.status,
+    "local_atual": carga.local_atual,
+    "destino": carga.destino,
+    "ultima_atualizacao": formatar_data_brasilia(
+        carga.ultima_atualizacao
+    ),
+    "historico": [
+        {
+            "id": evento.id,
+            "status": evento.status,
+            "local": evento.local,
+            "observacao": evento.observacao or "",
+            "data_evento": formatar_data_brasilia(
+                evento.data_evento
+            )
+        }
+        for evento in historico
+    ]
+ }), 200
+    
+@app.route(
+    "/api/motorista/minhas-viagens",
+    methods=["GET"]
+)
+@jwt_required()
+def api_motorista_minhas_viagens():
+    usuario_id = int(get_jwt_identity())
+
+    usuario_sistema = db.session.get(
+        UsuarioSistema,
+        usuario_id
+    )
+
+    if not usuario_sistema or not usuario_sistema.ativo:
+        return jsonify({
+            "erro": "Usuário não autorizado."
+        }), 401
+
+    if str(usuario_sistema.perfil).strip().lower() != "motorista":
+        return jsonify({
+            "erro": "Acesso permitido somente para motoristas."
+        }), 403
+
+    motorista = Motorista.query.filter_by(
+        usuario=usuario_sistema.usuario
+    ).first()
+
+    if not motorista:
+        return jsonify({
+            "erro": "O usuário não está vinculado a um motorista."
+        }), 404
+
+    if str(motorista.status).strip().lower() == "inativo":
+        return jsonify({
+            "erro": "Este motorista está inativo."
+        }), 403
+
+    viagens = (
+        Viagem.query
+        .filter_by(
+            motorista_id=motorista.id
+        )
+        .order_by(
+            Viagem.data_criacao.desc()
+        )
+        .all()
+    )
+
+    lista = []
+
+    for viagem in viagens:
+        lista.append({
+            "id": viagem.id,
+            "codigo": viagem.codigo or "",
+            "origem": viagem.origem,
+            "destino": viagem.destino,
+            "status": viagem.status,
+            "data_saida": (
+                viagem.data_saida.strftime(
+                    "%d/%m/%Y %H:%M"
+                )
+                if viagem.data_saida
+                else ""
+            ),
+            "previsao_entrega": (
+                viagem.previsao_entrega.strftime(
+                    "%d/%m/%Y %H:%M"
+                )
+                if viagem.previsao_entrega
+                else ""
+            ),
+            "carga_codigo": (
+                viagem.carga.codigo
+                if viagem.carga
+                else ""
+            ),
+            "veiculo": (
+                viagem.veiculo.placa
+                if viagem.veiculo
+                else ""
+            ),
+        })
+
+    return jsonify(lista), 200
+    
+@app.route(
+    "/api/admin/cargas/<int:id>/criar-viagem",
+    methods=["POST"]
+)
+@jwt_required()
+def criar_viagem_para_carga(id):
+    usuario_id = int(get_jwt_identity())
+
+    usuario = db.session.get(
+        UsuarioSistema,
+        usuario_id
+    )
+
+    if not usuario or not usuario.ativo:
+        return jsonify({
+            "erro": "Usuário não autorizado."
+        }), 401
+
+    if str(usuario.perfil).strip().lower() not in [
+        "administrador",
+        "operador"
+    ]:
+        return jsonify({
+            "erro": "Você não possui permissão para criar viagens para cargas."
+        }), 403
+
+    carga = Rastreamento.query.get(id)
+
+    if not carga:
+        return {
+            "mensagem": "Carga não encontrada."
+        }, 404
+
+    viagem_existente = Viagem.query.filter_by(
+        rastreamento_id=carga.id
+    ).first()
+
+    if viagem_existente:
+        return {
+            "mensagem": "Esta carga já possui uma viagem.",
+            "viagem_id": viagem_existente.id
+        }, 200
+
+    if not carga.motorista_id:
+        return {
+            "mensagem": "Atribua um motorista antes de criar a viagem."
+        }, 400
+
+    if not carga.veiculo_id:
+        return {
+            "mensagem": "Atribua um veículo antes de criar a viagem."
+        }, 400
+
+    if not carga.local_atual:
+        return {
+            "mensagem": "A carga não possui uma origem definida."
+        }, 400
+
+    if not carga.destino:
+        return {
+            "mensagem": "A carga não possui um destino definido."
+        }, 400
+
+    nova_viagem = Viagem(
+        rastreamento_id=carga.id,
+        motorista_id=carga.motorista_id,
+        veiculo_id=carga.veiculo_id,
+        origem=carga.local_atual,
+        destino=carga.destino,
+        status="Planejada"
+    )
+
+    db.session.add(nova_viagem)
+
+    db.session.flush()
+
+    registrar_historico(
+        nova_viagem.id,
+        "PLANEJAMENTO",
+        "Viagem criada para a carga pelo painel administrativo."
+    )
+
+    historico_rastreamento = HistoricoRastreamento(
+        rastreamento_id=carga.id,
+        status=carga.status,
+        local=carga.local_atual,
+        observacao="Viagem planejada para a carga."
+    )
+
+    db.session.add(historico_rastreamento)
+    db.session.commit()
+
+    return {
+        "mensagem": "Viagem criada com sucesso!",
+        "viagem_id": nova_viagem.id
+    }, 201
+    
+@app.route(
+    "/api/admin/viagens/<int:viagem_id>/finalizar",
+    methods=["POST"]
+)
+
+@jwt_required()
+def api_finalizar_viagem(viagem_id):
+    usuario_id = int(get_jwt_identity())
+
+    usuario = db.session.get(
+        UsuarioSistema,
+        usuario_id
+    )
+
+    if not usuario or not usuario.ativo:
+        return jsonify({
+            "erro": "Usuário não autorizado."
+        }), 401
+
+    if str(usuario.perfil).strip().lower() not in [
+        "administrador",
+        "operador"
+    ]:
+        return jsonify({
+            "erro": "Você não possui permissão para finalizar entregas."
+        }), 403
+
+    viagem = db.session.get(
+        Viagem,
+        viagem_id
+    )
+
+    if not viagem:
+        return jsonify({
+            "erro": "Viagem não encontrada."
+        }), 404
+
+    status_atual = str(viagem.status).strip().lower()
+
+    if status_atual == "entregue":
+        return jsonify({
+            "erro": "Esta viagem já foi finalizada."
+        }), 409
+
+    if status_atual == "cancelada":
+        return jsonify({
+            "erro": "Não é possível finalizar uma viagem cancelada."
+        }), 409
+
+    dados = request.get_json() or {}
+
+    recebedor = str(
+        dados.get("recebedor", "")
+    ).strip()
+
+    observacao = str(
+        dados.get("observacao", "")
+    ).strip()
+
+    if not recebedor:
+        return jsonify({
+            "erro": "Informe o nome do recebedor."
+        }), 400
+
+    carga = db.session.get(
+        Rastreamento,
+        viagem.rastreamento_id
+    )
+
+    motorista = db.session.get(
+        Motorista,
+        viagem.motorista_id
+    )
+
+    veiculo = db.session.get(
+        Veiculo,
+        viagem.veiculo_id
+    )
+
+    if not carga:
+        return jsonify({
+            "erro": "A carga vinculada à viagem não foi encontrada."
+        }), 404
+
+    try:
+        comprovante_existente = (
+            ComprovanteEntrega.query
+            .filter_by(viagem_id=viagem.id)
+            .first()
+        )
+
+        if comprovante_existente:
+            return jsonify({
+                "erro": "Esta viagem já possui um comprovante de entrega."
+            }), 409
+
+        comprovante = ComprovanteEntrega(
+            viagem_id=viagem.id,
+            recebedor=recebedor,
+            observacao=observacao,
+            data_entrega=datetime.utcnow()
+        )
+
+        db.session.add(comprovante)
+
+        viagem.status = "Entregue"
+        carga.status = "Entregue"
+
+        if hasattr(carga, "ultima_atualizacao"):
+            carga.ultima_atualizacao = datetime.utcnow()
+
+        recalcular_disponibilidade_motorista(
+            motorista,
+            excluir_viagem_id=viagem.id,
+            excluir_carga_id=carga.id
+        )
+
+        recalcular_status_veiculo(
+            veiculo,
+            excluir_viagem_id=viagem.id,
+            excluir_carga_id=carga.id
+        )
+
+        historico_rastreamento = HistoricoRastreamento(
+            rastreamento_id=carga.id,
+            status="Entregue",
+            local=viagem.destino,
+            observacao=(
+                f"Entrega finalizada. Recebido por {recebedor}."
+                + (
+                    f" Observação: {observacao}"
+                    if observacao
+                    else ""
+                )
+            )
+        )
+
+        db.session.add(historico_rastreamento)
+
+        registrar_historico(
+            viagem.id,
+            "ENTREGA",
+            (
+                f"Entrega finalizada. Recebedor: {recebedor}."
+                + (
+                    f" Observação: {observacao}"
+                    if observacao
+                    else ""
+                )
+            )
+        )
+        
+        
+
+        db.session.commit()
+
+        return jsonify({
+            "mensagem": "Entrega finalizada com sucesso!",
+            "comprovante": {
+                "id": comprovante.id,
+                "viagem_id": viagem.id,
+                "recebedor": comprovante.recebedor,
+                "observacao": comprovante.observacao or "",
+                "data_entrega": formatar_data_brasilia(
+                    comprovante.data_entrega
+                )
+            }
+        }), 201
+
+    except Exception as erro:
+        db.session.rollback()
+
+        print(
+            "ERRO AO FINALIZAR ENTREGA:",
+            erro
+        )
+
+        return jsonify({
+            "erro": "Não foi possível finalizar a entrega."
+        }), 500
+        
+@app.route(
+    "/api/motorista/minhas-viagens/<int:viagem_id>/finalizar",
+    methods=["POST"]
+)
+@jwt_required()
+def api_finalizar_viagem_motorista(viagem_id):
+    usuario_id = int(get_jwt_identity())
+
+    usuario = db.session.get(
+        UsuarioSistema,
+        usuario_id
+    )
+
+    if not usuario or not usuario.ativo:
+        return jsonify({
+            "erro": "Usuário não autorizado."
+        }), 401
+
+    if str(usuario.perfil).strip().lower() != "motorista":
+        return jsonify({
+            "erro": "Acesso permitido somente para motoristas."
+        }), 403
+
+    motorista_logado = Motorista.query.filter_by(
+        usuario=usuario.usuario
+    ).first()
+
+    if not motorista_logado:
+        return jsonify({
+            "erro": "O usuário não está vinculado a um motorista."
+        }), 404
+
+    if str(motorista_logado.status).strip().lower() == "inativo":
+        return jsonify({
+            "erro": "Este motorista está inativo."
+        }), 403
+
+    viagem = Viagem.query.filter_by(
+        id=viagem_id,
+        motorista_id=motorista_logado.id
+    ).first()
+
+    if not viagem:
+        return jsonify({
+            "erro": (
+                "Viagem não encontrada ou não pertence "
+                "a este motorista."
+            )
+        }), 404
+
+    status_atual = str(viagem.status).strip().lower()
+
+    if status_atual == "cancelada":
+        return jsonify({
+            "erro": "Não é possível finalizar uma viagem cancelada."
+        }), 409
+
+    if status_atual == "entregue":
+        return jsonify({
+            "erro": "Esta viagem já foi finalizada."
+        }), 409
+
+    dados = request.get_json(silent=True) or {}
+
+    recebedor = str(
+        dados.get("recebedor", "")
+    ).strip()
+
+    observacao = str(
+        dados.get("observacao", "")
+    ).strip()
+
+    if not recebedor:
+        return jsonify({
+            "erro": "Informe o nome do recebedor."
+        }), 400
+
+    carga = db.session.get(
+        Rastreamento,
+        viagem.rastreamento_id
+    )
+
+    veiculo = db.session.get(
+        Veiculo,
+        viagem.veiculo_id
+    )
+
+    if not carga:
+        return jsonify({
+            "erro": (
+                "A carga vinculada à viagem "
+                "não foi encontrada."
+            )
+        }), 404
+
+    try:
+        comprovante_existente = (
+            ComprovanteEntrega.query
+            .filter_by(
+                viagem_id=viagem.id
+            )
+            .first()
+        )
+
+        if comprovante_existente:
+            return jsonify({
+                "erro": (
+                    "Esta viagem já possui um "
+                    "comprovante de entrega."
+                )
+            }), 409
+
+        comprovante = ComprovanteEntrega(
+            viagem_id=viagem.id,
+            recebedor=recebedor,
+            observacao=observacao,
+            data_entrega=datetime.utcnow()
+        )
+
+        db.session.add(comprovante)
+
+        # Finaliza viagem e carga
+        viagem.status = "Entregue"
+        carga.status = "Entregue"
+
+        if hasattr(carga, "ultima_atualizacao"):
+            carga.ultima_atualizacao = datetime.utcnow()
+
+        recalcular_disponibilidade_motorista(
+            motorista_logado,
+            excluir_viagem_id=viagem.id,
+            excluir_carga_id=carga.id
+        )
+
+        recalcular_status_veiculo(
+            veiculo,
+            excluir_viagem_id=viagem.id,
+            excluir_carga_id=carga.id
+        )
+
+        historico_rastreamento = HistoricoRastreamento(
+            rastreamento_id=carga.id,
+            status="Entregue",
+            local=viagem.destino,
+            observacao=(
+                f"Entrega finalizada. Recebido por {recebedor}."
+                + (
+                    f" Observação: {observacao}"
+                    if observacao
+                    else ""
+                )
+            )
+        )
+
+        db.session.add(historico_rastreamento)
+
+        registrar_historico(
+            viagem.id,
+            "ENTREGA",
+            (
+                f"Entrega finalizada pelo motorista. "
+                f"Recebedor: {recebedor}."
+                + (
+                    f" Observação: {observacao}"
+                    if observacao
+                    else ""
+                )
+            )
+        )
+
+        # ... históricos ...
+
+        print(
+            "ANTES DO COMMIT:",
+            motorista_logado.id,
+            motorista_logado.nome,
+            motorista_logado.status,
+            motorista_logado.disponibilidade
+        )
+
+        db.session.commit()
+
+        db.session.refresh(motorista_logado)
+
+        print(
+            "DEPOIS DO COMMIT:",
+            motorista_logado.id,
+            motorista_logado.nome,
+            motorista_logado.status,
+            motorista_logado.disponibilidade
+        )
+
+        return jsonify({
+            "mensagem": "Entrega finalizada com sucesso!",
+            "comprovante": {
+                "id": comprovante.id,
+                "viagem_id": viagem.id,
+                "recebedor": comprovante.recebedor,
+                "observacao": comprovante.observacao or "",
+                "data_entrega": formatar_data_brasilia(
+                    comprovante.data_entrega
+                )
+            }
+        }), 201
+
+    except Exception as erro:
+        db.session.rollback()
+
+        print(
+            "ERRO AO FINALIZAR ENTREGA PELO MOTORISTA:",
+            erro
+        )
+
+        return jsonify({
+            "erro": "Não foi possível finalizar a entrega."
+        }), 500
+    
+@app.route(
+    "/api/cliente/minhas-cargas/<int:carga_id>/ocorrencias",
+    methods=["GET"]
+)
+@jwt_required()
+def api_listar_ocorrencias_cliente(carga_id):
+    usuario_id = int(get_jwt_identity())
+
+    usuario_sistema = UsuarioSistema.query.get_or_404(usuario_id)
+
+    if usuario_sistema.perfil.lower() != "cliente":
+        return {
+            "erro": "Acesso permitido somente para clientes."
+        }, 403
+
+    cliente_usuario = ClienteUsuario.query.filter_by(
+        email=usuario_sistema.email,
+        ativo=True
+    ).first()
+
+    if not cliente_usuario:
+        return {
+            "erro": "O usuário não está vinculado a um cliente."
+        }, 404
+
+    consulta = Rastreamento.query.filter_by(id=carga_id)
+
+    if cliente_usuario.cliente_id:
+        consulta = consulta.filter_by(
+            cliente_id=cliente_usuario.cliente_id
+        )
+    else:
+        consulta = consulta.filter_by(
+            cliente=cliente_usuario.empresa
+        )
+
+    carga = consulta.first()
+
+    if not carga:
+        return {
+            "erro": "Carga não encontrada ou não pertence a este cliente."
+        }, 404
+
+    ocorrencias = OcorrenciaEntrega.query.filter_by(
+        rastreamento_id=carga.id
+    ).order_by(
+        OcorrenciaEntrega.data_ocorrencia.desc()
+    ).all()
+
+    return jsonify([
+        {
+            "id": ocorrencia.id,
+            "titulo": ocorrencia.titulo,
+            "descricao": ocorrencia.descricao,
+            "data_ocorrencia": (
+                formatar_data_brasilia(ocorrencia.data_ocorrencia)
+                if ocorrencia.data_ocorrencia
+                else ""
+            )
+        }
+        for ocorrencia in ocorrencias
+    ]), 200
+    
+@app.route(
+    "/api/cliente/minhas-cargas/<int:carga_id>/ocorrencias",
+    methods=["POST"]
+)
+@jwt_required()
+def api_criar_ocorrencia_cliente(carga_id):
+    usuario_id = int(get_jwt_identity())
+
+    usuario_sistema = UsuarioSistema.query.get_or_404(usuario_id)
+
+    if usuario_sistema.perfil.lower() != "cliente":
+        return {
+            "erro": "Acesso permitido somente para clientes."
+        }, 403
+
+    cliente_usuario = ClienteUsuario.query.filter_by(
+        email=usuario_sistema.email,
+        ativo=True
+    ).first()
+
+    if not cliente_usuario:
+        return {
+            "erro": "O usuário não está vinculado a um cliente."
+        }, 404
+
+    consulta = Rastreamento.query.filter_by(id=carga_id)
+
+    if cliente_usuario.cliente_id:
+        consulta = consulta.filter_by(
+            cliente_id=cliente_usuario.cliente_id
+        )
+    else:
+        consulta = consulta.filter_by(
+            cliente=cliente_usuario.empresa
+        )
+
+    carga = consulta.first()
+
+    if not carga:
+        return {
+            "erro": "Carga não encontrada ou não pertence a este cliente."
+        }, 404
+
+    dados = request.get_json() or {}
+
+    titulo = dados.get("titulo", "").strip()
+    descricao = dados.get("descricao", "").strip()
+
+    if not titulo or not descricao:
+        return {
+            "erro": "Informe o título e a descrição da ocorrência."
+        }, 400
+
+    ocorrencia = OcorrenciaEntrega(
+        rastreamento_id=carga.id,
+        titulo=titulo,
+        descricao=descricao
+    )
+
+    db.session.add(ocorrencia)
+    db.session.commit()
+
+    return jsonify({
+        "mensagem": "Ocorrência registrada com sucesso!",
+        "ocorrencia": {
+            "id": ocorrencia.id,
+            "titulo": ocorrencia.titulo,
+            "descricao": ocorrencia.descricao,
+            "data_ocorrencia": formatar_data_brasilia(
+    ocorrencia.data_ocorrencia
+)
+        }
+    }), 201
+    
+@app.route(
+    "/api/cliente/minhas-cargas/<int:carga_id>/comprovantes",
+    methods=["GET"]
+)
+@jwt_required()
+def api_comprovantes_carga_cliente(carga_id):
+    usuario_id = int(get_jwt_identity())
+
+    usuario_sistema = db.session.get(
+        UsuarioSistema,
+        usuario_id
+    )
+
+    if not usuario_sistema or not usuario_sistema.ativo:
+        return jsonify({
+            "erro": "Usuário não autorizado."
+        }), 401
+
+    if str(usuario_sistema.perfil).strip().lower() != "cliente":
+        return {
+            "erro": "Acesso permitido somente para clientes."
+        }, 403
+
+    cliente_usuario = ClienteUsuario.query.filter_by(
+        email=usuario_sistema.email,
+        ativo=True
+    ).first()
+
+    if not cliente_usuario:
+        return {
+            "erro": "O usuário não está vinculado a um cliente."
+        }, 404
+
+    consulta = Rastreamento.query.filter_by(id=carga_id)
+
+    if cliente_usuario.cliente_id:
+        consulta = consulta.filter_by(
+            cliente_id=cliente_usuario.cliente_id
+        )
+    else:
+        consulta = consulta.filter_by(
+            cliente=cliente_usuario.empresa
+        )
+
+    carga = consulta.first()
+
+    if not carga:
+        return {
+            "erro": "Carga não encontrada ou não pertence a este cliente."
+        }, 404
+
+    viagem = Viagem.query.filter_by(
+        rastreamento_id=carga.id
+    ).first()
+
+    if not viagem:
+        return jsonify({
+            "comprovantes": [],
+            "arquivos": []
+        }), 200
+
+    comprovantes = ComprovanteEntrega.query.filter_by(
+        viagem_id=viagem.id
+    ).order_by(
+        ComprovanteEntrega.data_entrega.desc()
+    ).all()
+
+    arquivos = ArquivoComprovanteViagem.query.filter_by(
+        viagem_id=viagem.id
+    ).order_by(
+        ArquivoComprovanteViagem.data_upload.desc()
+    ).all()
+
+    return jsonify({
+        "comprovantes": [
+            {
+                "id": comprovante.id,
+                "viagem_id": comprovante.viagem_id,
+                "recebedor": comprovante.recebedor,
+                "observacao": comprovante.observacao or "",
+                "data_entrega": (
+                    formatar_data_brasilia(comprovante.data_entrega)
+                    if comprovante.data_entrega
+                    else ""
+                )
+            }
+            for comprovante in comprovantes
+        ],
+        "arquivos": [
+            {
+                "id": arquivo.id,
+                "nome_arquivo": arquivo.nome_arquivo,
+                "data_upload": formatar_data_brasilia(
+                    arquivo.data_upload
+                ),
+                "url": (
+                    "http://127.0.0.1:5000/"
+                    f"static/uploads/{arquivo.nome_arquivo}"
+                )
+            }
+            for arquivo in arquivos
+        ]
+    }), 200
+    
+@app.route(
+    "/api/cliente/perfil",
+    methods=["GET"]
+)
+@jwt_required()
+def api_perfil_cliente():
+    usuario_id = int(get_jwt_identity())
+
+    usuario_sistema = db.session.get(
+        UsuarioSistema,
+        usuario_id
+    )
+
+    if not usuario_sistema:
+        return jsonify({
+            "erro": "Usuário não encontrado."
+        }), 404
+
+    if str(usuario_sistema.perfil).strip().lower() != "cliente":
+        return jsonify({
+            "erro": "Acesso permitido somente para clientes."
+        }), 403
+
+    cliente_usuario = ClienteUsuario.query.filter_by(
+        email=usuario_sistema.email,
+        ativo=True
+    ).first()
+
+    if not cliente_usuario:
+        return jsonify({
+            "erro": "Cliente não vinculado ao usuário."
+        }), 404
+
+    cliente = None
+
+    if cliente_usuario.cliente_id:
+        cliente = db.session.get(
+            Cliente,
+            cliente_usuario.cliente_id
+        )
+
+    return jsonify({
+        "nome": cliente_usuario.nome or usuario_sistema.nome,
+        "empresa": (
+            cliente.razao_social
+            if cliente
+            else cliente_usuario.empresa
+        ),
+        "nome_fantasia": (
+            cliente.nome_fantasia
+            if cliente
+            else ""
+        ),
+        "responsavel": (
+            cliente.responsavel
+            if cliente
+            else cliente_usuario.nome
+        ),
+        "email": (
+            cliente.email
+            if cliente and cliente.email
+            else cliente_usuario.email
+        ),
+        "telefone": (
+            cliente.telefone
+            if cliente
+            else ""
+        ),
+        "documento": (
+            cliente.documento
+            if cliente
+            else ""
+        ),
+        "endereco": (
+            cliente.endereco
+            if cliente
+            else ""
+        ),
+        "cidade": (
+            cliente.cidade
+            if cliente
+            else ""
+        ),
+        "estado": (
+            cliente.estado
+            if cliente
+            else ""
+        )
+    }), 200
+    
+@app.route(
+    "/api/admin/cargas/<int:id>/atribuir-motorista",
+    methods=["PUT"]
+)
+@jwt_required()
+def atribuir_motorista(id):
+    usuario_id = int(get_jwt_identity())
+
+    usuario = db.session.get(
+        UsuarioSistema,
+        usuario_id
+    )
+
+    if not usuario or not usuario.ativo:
+        return jsonify({
+            "erro": "Usuário não autorizado."
+        }), 401
+
+    if str(usuario.perfil).strip().lower() not in [
+        "administrador",
+        "operador"
+    ]:
+        return jsonify({
+            "erro": "Você não possui permissão para atribuir motoristas."
+        }), 403
+
+    dados = request.get_json() or {}
+
+    motorista_id = dados.get("motorista_id")
+
+    if not motorista_id:
+        return jsonify({
+            "erro": "motorista_id é obrigatório."
+        }), 400
+
+    carga = db.session.get(
+        Rastreamento,
+        id
+    )
+
+    if not carga:
+        return jsonify({
+            "erro": "Carga não encontrada."
+        }), 404
+
+    # Viagem vinculada a esta carga, caso exista.
+    viagem_atual = Viagem.query.filter_by(
+        rastreamento_id=carga.id
+    ).first()
+
+    status_carga = str(
+        carga.status or ""
+    ).strip().lower()
+
+    status_viagem = str(
+        viagem_atual.status if viagem_atual else ""
+    ).strip().lower()
+
+    if (
+        status_carga in ["entregue", "cancelada"]
+        or status_viagem in ["entregue", "cancelada"]
+    ):
+        return jsonify({
+            "erro": (
+                "Não é possível alterar o motorista de uma "
+                "carga com operação finalizada."
+            )
+        }), 409
+
+    motorista = db.session.get(
+        Motorista,
+        int(motorista_id)
+    )
+
+    if not motorista:
+        return jsonify({
+            "erro": "Motorista não encontrado."
+        }), 404
+
+    if str(motorista.status).strip().lower() == "inativo":
+        return jsonify({
+            "erro": "O motorista selecionado está inativo."
+        }), 400
+
+    status_viagem_ativos = STATUS_VIAGEM_ATIVOS_RECURSOS
+
+    # Verifica se o NOVO motorista
+    # já possui outra viagem ativa.
+    consulta_viagem = Viagem.query.filter(
+        Viagem.motorista_id == motorista.id,
+        Viagem.status.in_(status_viagem_ativos)
+    )
+
+    if viagem_atual:
+        consulta_viagem = consulta_viagem.filter(
+            Viagem.id != viagem_atual.id
+        )
+
+    viagem_conflitante = consulta_viagem.first()
+
+    if viagem_conflitante:
+        return jsonify({
+            "erro": (
+                "Este motorista já está vinculado "
+                "a outra viagem ativa."
+            )
+        }), 409
+
+    status_carga_ativos = STATUS_CARGA_ATIVOS_RECURSOS
+
+    # Verifica se o NOVO motorista
+    # já possui outra carga ativa.
+    carga_conflitante = Rastreamento.query.filter(
+        Rastreamento.motorista_id == motorista.id,
+        Rastreamento.id != carga.id,
+        Rastreamento.status.in_(status_carga_ativos)
+    ).first()
+
+    if carga_conflitante:
+        return jsonify({
+            "erro": (
+                "Este motorista já está vinculado "
+                f"à carga {carga_conflitante.codigo}."
+            )
+        }), 409
+
+    try:
+        # Guarda o motorista anterior
+        # ANTES de fazer a troca.
+        motorista_anterior_id = carga.motorista_id
+
+        motorista_anterior = None
+
+        if motorista_anterior_id:
+            motorista_anterior = db.session.get(
+                Motorista,
+                motorista_anterior_id
+            )
+
+        # Atualiza motorista da carga.
+        carga.motorista_id = motorista.id
+
+        # Se a carga já possui viagem,
+        # sincroniza o motorista da viagem.
+        if viagem_atual:
+            viagem_atual.motorista_id = motorista.id
+
+            # Se a viagem está ativa,
+            # o novo motorista fica Em viagem.
+            operacao_atual_ativa = (
+                viagem_atual.status in status_viagem_ativos
+                or carga.status in status_carga_ativos
+            )
+
+            if operacao_atual_ativa:
+                motorista.disponibilidade = "Em viagem"
+            else:
+                motorista.disponibilidade = "Disponível"
+
+            # Só registra histórico
+            # quando realmente houve troca.
+            if motorista_anterior_id != motorista.id:
+                nome_anterior = (
+                    motorista_anterior.nome
+                    if motorista_anterior
+                    else "Não definido"
+                )
+
+                registrar_historico(
+                    viagem_atual.id,
+                    "MOTORISTA",
+                    (
+                        f"Motorista alterado de "
+                        f"{nome_anterior} para {motorista.nome}."
+                    )
+                )
+
+        else:
+            # Ainda não existe viagem.
+            motorista.disponibilidade = (
+                "Em viagem"
+                if carga.status in status_carga_ativos
+                else "Disponível"
+            )
+
+        if motorista_anterior_id != motorista.id:
+            nome_anterior = (
+                motorista_anterior.nome
+                if motorista_anterior
+                else "Não definido"
+            )
+
+            historico_rastreamento = HistoricoRastreamento(
+                rastreamento_id=carga.id,
+                status=carga.status,
+                local=carga.local_atual,
+                observacao=(
+                    f"Motorista alterado de {nome_anterior} "
+                    f"para {motorista.nome}."
+                )
+            )
+
+            db.session.add(historico_rastreamento)
+
+        # -------------------------------------------------
+        # LIBERA O MOTORISTA ANTERIOR
+        # -------------------------------------------------
+
+        if (
+            motorista_anterior
+            and motorista_anterior.id != motorista.id
+        ):
+            recalcular_disponibilidade_motorista(
+                motorista_anterior,
+                excluir_viagem_id=(
+                    viagem_atual.id
+                    if viagem_atual
+                    else None
+                ),
+                excluir_carga_id=carga.id
+            )
+
+        db.session.commit()
+
+        return jsonify({
+            "mensagem": "Motorista atribuído com sucesso!",
+            "carga_id": carga.id,
+            "motorista_id": motorista.id,
+            "motorista_nome": motorista.nome,
+            "disponibilidade": motorista.disponibilidade,
+            "viagem_id": (
+                viagem_atual.id
+                if viagem_atual
+                else None
+            )
+        }), 200
+
+    except Exception as erro:
+        db.session.rollback()
+
+        print(
+            "ERRO AO ATRIBUIR MOTORISTA:",
+            erro
+        )
+
+        return jsonify({
+            "erro": "Não foi possível atribuir o motorista."
+        }), 500
+    
+@app.route(
+    "/api/admin/cargas/<int:id>/atribuir-veiculo",
+    methods=["PUT"]
+)
+@jwt_required()
+def atribuir_veiculo(id):
+    usuario_id = int(get_jwt_identity())
+
+    usuario = db.session.get(
+        UsuarioSistema,
+        usuario_id
+    )
+
+    if not usuario or not usuario.ativo:
+        return jsonify({
+            "erro": "Usuário não autorizado."
+        }), 401
+
+    if str(usuario.perfil).strip().lower() not in [
+        "administrador",
+        "operador"
+    ]:
+        return jsonify({
+            "erro": "Você não possui permissão para atribuir veículos."
+        }), 403
+
+    dados = request.get_json() or {}
+
+    veiculo_id = dados.get("veiculo_id")
+
+    if not veiculo_id:
+        return jsonify({
+            "erro": "veiculo_id é obrigatório."
+        }), 400
+
+    carga = db.session.get(
+        Rastreamento,
+        id
+    )
+
+    if not carga:
+        return jsonify({
+            "erro": "Carga não encontrada."
+        }), 404
+
+    # Busca a viagem vinculada à carga antes de qualquer alteração.
+    viagem_atual = Viagem.query.filter_by(
+        rastreamento_id=carga.id
+    ).first()
+
+    status_carga = str(
+        carga.status or ""
+    ).strip().lower()
+
+    status_viagem = str(
+        viagem_atual.status if viagem_atual else ""
+    ).strip().lower()
+
+    if (
+        status_carga in ["entregue", "cancelada"]
+        or status_viagem in ["entregue", "cancelada"]
+    ):
+        return jsonify({
+            "erro": (
+                "Não é possível alterar o veículo de uma "
+                "carga com operação finalizada."
+            )
+        }), 409
+
+    try:
+        veiculo_id = int(veiculo_id)
+    except (TypeError, ValueError):
+        return jsonify({
+            "erro": "veiculo_id inválido."
+        }), 400
+
+    veiculo = db.session.get(
+        Veiculo,
+        veiculo_id
+    )
+
+    if not veiculo:
+        return jsonify({
+            "erro": "Veículo não encontrado."
+        }), 404
+
+    status_veiculo = str(
+        veiculo.status or ""
+    ).strip().lower()
+
+    if status_veiculo in [
+        "inativo",
+        "manutenção",
+        "em manutenção"
+    ]:
+        return jsonify({
+            "erro": (
+                "O veículo selecionado não está "
+                "disponível para operação."
+            )
+        }), 400
+
+    status_viagem_ativos = STATUS_VIAGEM_ATIVOS_RECURSOS
+
+    # Procura o mesmo veículo em outra viagem ativa.
+    consulta_viagem = Viagem.query.filter(
+        Viagem.veiculo_id == veiculo.id,
+        Viagem.status.in_(status_viagem_ativos)
+    )
+
+    if viagem_atual:
+        consulta_viagem = consulta_viagem.filter(
+            Viagem.id != viagem_atual.id
+        )
+
+    viagem_conflitante = consulta_viagem.first()
+
+    if viagem_conflitante:
+        return jsonify({
+            "erro": (
+                "Este veículo já está vinculado "
+                "a outra viagem ativa."
+            )
+        }), 409
+
+    status_carga_ativos = STATUS_CARGA_ATIVOS_RECURSOS
+
+    # Procura o veículo em outra carga ativa,
+    # mesmo que essa carga ainda não tenha viagem.
+    carga_conflitante = Rastreamento.query.filter(
+        Rastreamento.veiculo_id == veiculo.id,
+        Rastreamento.id != carga.id,
+        Rastreamento.status.in_(status_carga_ativos)
+    ).first()
+
+    if carga_conflitante:
+        return jsonify({
+            "erro": (
+                "Este veículo já está vinculado "
+                f"à carga {carga_conflitante.codigo}."
+            )
+        }), 409
+
+    try:
+        veiculo_anterior_id = carga.veiculo_id
+
+        veiculo_anterior = None
+
+        if veiculo_anterior_id:
+            veiculo_anterior = db.session.get(
+                Veiculo,
+                veiculo_anterior_id
+            )
+
+        carga.veiculo_id = veiculo.id
+
+        # Se já existe viagem, sincroniza o veículo.
+        if viagem_atual:
+            veiculo_anterior_viagem_id = (
+                viagem_atual.veiculo_id
+            )
+
+            viagem_atual.veiculo_id = veiculo.id
+
+            operacao_atual_ativa = (
+                viagem_atual.status in status_viagem_ativos
+                or carga.status in status_carga_ativos
+            )
+
+            if operacao_atual_ativa:
+                veiculo.status = "Em viagem"
+            else:
+                recalcular_status_veiculo(
+                    veiculo,
+                    excluir_viagem_id=viagem_atual.id,
+                    excluir_carga_id=carga.id
+                )
+
+            # Evita repetir o mesmo evento na Timeline.
+            if (
+                veiculo_anterior_viagem_id
+                != veiculo.id
+            ):
+                placa_anterior = (
+                    veiculo_anterior.placa
+                    if veiculo_anterior
+                    else "Não definido"
+                )
+
+                registrar_historico(
+                    viagem_atual.id,
+                    "VEÍCULO",
+                    (
+                        f"Veículo alterado de {placa_anterior} "
+                        f"para {veiculo.placa}."
+                    )
+                )
+
+        else:
+            if carga.status in status_carga_ativos:
+                veiculo.status = "Em viagem"
+            else:
+                recalcular_status_veiculo(
+                    veiculo,
+                    excluir_carga_id=carga.id
+                )
+
+        if veiculo_anterior_id != veiculo.id:
+            placa_anterior = (
+                veiculo_anterior.placa
+                if veiculo_anterior
+                else "Não definido"
+            )
+
+            historico_rastreamento = HistoricoRastreamento(
+                rastreamento_id=carga.id,
+                status=carga.status,
+                local=carga.local_atual,
+                observacao=(
+                    f"Veículo alterado de {placa_anterior} "
+                    f"para {veiculo.placa}."
+                )
+            )
+
+            db.session.add(historico_rastreamento)
+
+        if (
+            veiculo_anterior
+            and veiculo_anterior.id != veiculo.id
+        ):
+            recalcular_status_veiculo(
+                veiculo_anterior,
+                excluir_viagem_id=(
+                    viagem_atual.id
+                    if viagem_atual
+                    else None
+                ),
+                excluir_carga_id=carga.id
+            )
+
+        db.session.commit()
+
+        return jsonify({
+            "mensagem": "Veículo atribuído com sucesso!",
+            "carga_id": carga.id,
+            "veiculo_id": veiculo.id,
+            "veiculo_placa": veiculo.placa,
+            "veiculo_alterado": (
+                veiculo_anterior_id != veiculo.id
+            ),
+            "viagem_id": (
+                viagem_atual.id
+                if viagem_atual
+                else None
+            )
+        }), 200
+
+    except Exception as erro:
+        db.session.rollback()
+
+        print(
+            "ERRO AO ATRIBUIR VEÍCULO:",
+            erro
+        )
+
+        return jsonify({
+            "erro": "Não foi possível atribuir o veículo."
+        }), 500
+    
+    
+@app.route(
+    "/api/admin/cargas/<int:id>/status",
+    methods=["PUT"]
+)
+@jwt_required()
+def atualizar_status_carga(id):
+    usuario_id = int(get_jwt_identity())
+
+    usuario = db.session.get(
+        UsuarioSistema,
+        usuario_id
+    )
+
+    if not usuario or not usuario.ativo:
+        return jsonify({
+            "erro": "Usuário não autorizado."
+        }), 401
+
+    if str(usuario.perfil).strip().lower() not in [
+        "administrador",
+        "operador"
+    ]:
+        return jsonify({
+            "erro": "Você não possui permissão para alterar o status de cargas."
+        }), 403
+
+    dados = request.get_json() or {}
+
+    novo_status = dados.get("status")
+
+    if not novo_status:
+        return jsonify({
+            "erro": "O status é obrigatório."
+        }), 400
+
+    status_permitidos = [
+        "Pendente",
+        "Programada",
+        "Em preparação",
+        "Carregando"
+        ]
+
+    if novo_status not in status_permitidos:
+     return jsonify({
+            "erro": "Status inválido."
+        }), 400
+
+    carga = Rastreamento.query.get(id)
+
+    if not carga:
+        return jsonify({
+            "erro": "Carga não encontrada."
+        }), 404
+
+    viagem = Viagem.query.filter_by(
+        rastreamento_id=carga.id
+    ).first()
+
+    if viagem:
+        status_viagem = str(viagem.status).strip().lower()
+
+        if status_viagem == "cancelada":
+            return jsonify({
+                "erro": "Não é possível alterar o status de uma viagem cancelada."
+            }), 409
+
+        if status_viagem == "entregue":
+            return jsonify({
+                "erro": "Não é possível alterar o status de uma viagem já entregue."
+            }), 409
+
+    status_anterior = carga.status
+
+    carga.status = novo_status
+    carga.ultima_atualizacao = datetime.utcnow()
+
+    if viagem:
+        viagem.status = novo_status
+        
+        registrar_historico(
+    viagem.id,
+    "STATUS",
+        f"Status alterado para {novo_status}."
+)
+
+    historico_rastreamento = HistoricoRastreamento(
+        rastreamento_id=carga.id,
+        status=novo_status,
+        local=carga.local_atual,
+        observacao=(
+            f"Status alterado de {status_anterior} para {novo_status}."
+        )
+    )
+
+    db.session.add(historico_rastreamento)
+
+    db.session.commit()
+
+    return jsonify({
+        "mensagem": "Status atualizado com sucesso!",
+        "carga_id": carga.id,
+        "status": carga.status,
+        "viagem_id": viagem.id if viagem else None,
+        "viagem_status": viagem.status if viagem else None,
+    }), 200
+
+    
+@app.route("/api/admin/viagens/despachar", methods=["POST"])
+@jwt_required()
+def api_despachar_viagem():
+    usuario_id = int(get_jwt_identity())
+
+    usuario = UsuarioSistema.query.get(usuario_id)
+
+    if not usuario or not usuario.ativo:
+        return jsonify({
+            "erro": "Usuário não autorizado."
+        }), 401
+
+    if str(usuario.perfil).strip().lower() not in [
+        "administrador",
+        "operador"
+    ]:
+        return jsonify({
+            "erro": "Você não possui permissão para despachar viagens."
+        }), 403
+
+    dados = request.get_json() or {}
+
+    rastreamento_id = dados.get("rastreamento_id")
+    motorista_id = dados.get("motorista_id")
+    veiculo_id = dados.get("veiculo_id")
+
+    origem = str(dados.get("origem", "")).strip()
+    destino = str(dados.get("destino", "")).strip()
+
+    data_saida_texto = dados.get("data_saida")
+    previsao_entrega_texto = dados.get("previsao_entrega")
+
+    if not rastreamento_id:
+        return jsonify({
+            "erro": "Selecione uma carga."
+        }), 400
+        
+
+    if not motorista_id:
+        return jsonify({
+            "erro": "Selecione um motorista."
+        }), 400
+
+    if not veiculo_id:
+        return jsonify({
+            "erro": "Selecione um veículo."
+        }), 400
+
+    if not origem:
+        return jsonify({
+            "erro": "Informe a origem da viagem."
+        }), 400
+
+    if not destino:
+        return jsonify({
+            "erro": "Informe o destino da viagem."
+        }), 400
+
+    carga = db.session.get(
+        Rastreamento,
+        int(rastreamento_id)
+    )
+
+    if not carga:
+        return jsonify({
+            "erro": "Carga não encontrada."
+        }), 404
+
+    motorista = db.session.get(
+        Motorista,
+        int(motorista_id)
+    )
+
+    if not motorista:
+        return jsonify({
+            "erro": "Motorista não encontrado."
+        }), 404
+
+    veiculo = db.session.get(
+        Veiculo,
+        int(veiculo_id)
+    )
+
+    if not veiculo:
+        return jsonify({
+            "erro": "Veículo não encontrado."
+        }), 404
+        
+    status_viagem_ativos = [
+    "Planejada",
+    "Em andamento",
+    "Em coleta",
+    "Carregando",
+    "Em trânsito",
+    "Parada operacional",
+    "Saiu para entrega"
+]
+
+    viagem_aberta_carga = Viagem.query.filter(
+        Viagem.rastreamento_id == carga.id,
+        Viagem.status.in_(status_viagem_ativos)
+    ).first()
+
+    if viagem_aberta_carga:
+        return jsonify({
+            "erro": "Esta carga já possui uma viagem aberta."
+        }), 409
+
+    viagem_aberta_motorista = Viagem.query.filter(
+        Viagem.motorista_id == motorista.id,
+        Viagem.status.in_(status_viagem_ativos)
+    ).first()
+
+    if viagem_aberta_motorista:
+        return jsonify({
+            "erro": "Este motorista já está vinculado a outra viagem."
+        }), 409
+
+    viagem_aberta_veiculo = Viagem.query.filter(
+        Viagem.veiculo_id == veiculo.id,
+        Viagem.status.in_(status_viagem_ativos)
+    ).first()
+
+    if viagem_aberta_veiculo:
+        return jsonify({
+            "erro": "Este veículo já está vinculado a outra viagem."
+        }), 409
+
+    if str(motorista.status).lower() == "inativo":
+        return jsonify({
+            "erro": "Não é possível selecionar um motorista inativo."
+        }), 400
+
+    if str(motorista.disponibilidade).strip().lower() == "em viagem":
+        return jsonify({
+        "erro": "Este motorista já está em viagem."
+    }), 409
+        
+    if str(veiculo.status).lower() in [
+        "inativo",
+        "manutenção",
+        "em manutenção"
+    ]:
+        return jsonify({
+            "erro": "Este veículo não está disponível."
+        }), 400
+
+    if str(veiculo.status).lower() == "em viagem":
+        return jsonify({
+            "erro": "Este veículo já está em viagem."
+        }), 409
+
+    try:
+        data_saida = (
+            datetime.fromisoformat(data_saida_texto)
+            if data_saida_texto
+            else datetime.utcnow()
+        )
+
+        previsao_entrega = (
+            datetime.fromisoformat(previsao_entrega_texto)
+            if previsao_entrega_texto
+            else None
+        )
+
+    except ValueError:
+        return jsonify({
+            "erro": "Uma das datas informadas é inválida."
+        }), 400
+
+    if previsao_entrega and previsao_entrega < data_saida:
+        return jsonify({
+            "erro": "A previsão de entrega não pode ser anterior à saída."
+        }), 400
+
+    try:
+        viagem = Viagem(
+            rastreamento_id=carga.id,
+            motorista_id=motorista.id,
+            veiculo_id=veiculo.id,
+            origem=origem,
+            destino=destino,
+            status="Em andamento",
+            data_saida=data_saida,
+            previsao_entrega=previsao_entrega
+        )
+
+        db.session.add(viagem)
+
+        db.session.flush()
+
+        registrar_historico(
+            viagem.id,
+            "DESPACHO",
+            (
+                f"Viagem despachada com o motorista {motorista.nome} "
+                f"e o veículo {veiculo.placa}."
+            )
+        )
+
+        carga.motorista_id = motorista.id
+        carga.veiculo_id = veiculo.id
+        carga.status = "Em trânsito"
+        carga.local_atual = origem
+        carga.destino = destino
+        carga.previsao_entrega = previsao_entrega
+        carga.ultima_atualizacao = datetime.utcnow()
+
+        motorista.disponibilidade = "Em viagem"
+        veiculo.status = "Em viagem"
+
+        historico = HistoricoRastreamento(
+            rastreamento_id=carga.id,
+            status="Em trânsito",
+            local=origem,
+            observacao=(
+                f"Viagem iniciada com o motorista "
+                f"{motorista.nome} e o veículo "
+                f"{veiculo.placa}."
+            )
+        )
+
+        db.session.add(historico)
+        db.session.commit()
+
+        return jsonify({
+            "mensagem": "Viagem despachada com sucesso!",
+            "viagem": {
+                "id": viagem.id,
+                "carga_id": carga.id,
+                "codigo_carga": carga.codigo,
+                "motorista_id": motorista.id,
+                "motorista": motorista.nome,
+                "veiculo_id": veiculo.id,
+                "veiculo": veiculo.placa,
+                "origem": viagem.origem,
+                "destino": viagem.destino,
+                "status": viagem.status,
+                "data_saida": (
+                    viagem.data_saida.isoformat()
+                    if viagem.data_saida
+                    else None
+                ),
+                "previsao_entrega": (
+                    viagem.previsao_entrega.isoformat()
+                    if viagem.previsao_entrega
+                    else None
+                )
+            }
+        }), 201
+
+    except Exception as erro:
+        db.session.rollback()
+
+        print("ERRO AO DESPACHAR VIAGEM:", erro)
+
+        return jsonify({
+            "erro": "Não foi possível despachar a viagem."
+        }), 500
+        
+@app.route("/api/admin/viagens/opcoes", methods=["GET"])
+@jwt_required()
+def api_opcoes_despacho_viagem():
+    usuario_id = int(get_jwt_identity())
+
+    usuario = UsuarioSistema.query.get(usuario_id)
+
+    if not usuario or not usuario.ativo:
+        return jsonify({
+            "erro": "Usuário não autorizado."
+        }), 401
+
+    if str(usuario.perfil).strip().lower() not in [
+        "administrador",
+        "operador"
+    ]:
+        return jsonify({
+            "erro": "Você não possui permissão para acessar viagens."
+        }), 403
+
+    status_viagem_ativos = [
+        "Planejada",
+        "Em andamento",
+        "Em coleta",
+        "Carregando",
+        "Em trânsito",
+        "Parada operacional",
+        "Saiu para entrega"
+    ]
+
+    cargas_ocupadas = db.session.query(
+        Viagem.rastreamento_id
+    ).filter(
+        Viagem.status.in_(status_viagem_ativos)
+    )
+
+    motoristas_ocupados = db.session.query(
+        Viagem.motorista_id
+    ).filter(
+        Viagem.status.in_(status_viagem_ativos)
+    )
+
+    veiculos_ocupados = db.session.query(
+        Viagem.veiculo_id
+    ).filter(
+        Viagem.status.in_(status_viagem_ativos)
+    )
+
+    cargas = Rastreamento.query.filter(
+        ~Rastreamento.id.in_(cargas_ocupadas),
+        ~Rastreamento.status.in_([
+            "Entregue",
+            "Cancelada"
+        ])
+    ).order_by(
+        Rastreamento.id.desc()
+    ).all()
+
+    motoristas = Motorista.query.filter(
+        ~Motorista.id.in_(motoristas_ocupados),
+        Motorista.status == "Ativo"
+    ).order_by(
+        Motorista.nome.asc()
+    ).all()
+
+    veiculos = Veiculo.query.filter(
+        ~Veiculo.id.in_(veiculos_ocupados),
+        ~Veiculo.status.in_([
+            "Inativo",
+            "Manutenção",
+            "Em manutenção",
+            "Em viagem"
+        ])
+    ).order_by(
+        Veiculo.placa.asc()
+    ).all()
+
+    return jsonify({
+        "cargas": [
+            {
+                "id": carga.id,
+                "codigo": carga.codigo,
+                "cliente": carga.cliente,
+                "local_atual": carga.local_atual,
+                "destino": carga.destino
+            }
+            for carga in cargas
+        ],
+
+        "motoristas": [
+            {
+                "id": motorista.id,
+                "nome": motorista.nome,
+                "status": motorista.status,
+                "disponibilidade": motorista.disponibilidade
+            }
+            for motorista in motoristas
+        ],
+
+        "veiculos": [
+            {
+                "id": veiculo.id,
+                "placa": veiculo.placa,
+                "modelo": veiculo.modelo,
+                "status": veiculo.status
+            }
+            for veiculo in veiculos
+        ]
+    }), 200
+
+    
+    
 if __name__ == "__main__":
-  app.run(debug=True)
+    app.run(debug=True)
