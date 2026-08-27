@@ -1,6 +1,11 @@
 from flask import Blueprint, request
-from flask_jwt_extended import create_access_token
+from flask_jwt_extended import (
+    create_access_token,
+    get_jwt_identity,
+    jwt_required
+)
 
+from extensions import db
 from models.usuarios import UsuarioSistema
 from services.auditoria import registrar_log
 
@@ -61,4 +66,57 @@ def api_login():
             "usuario": usuario.usuario,
             "perfil": usuario.perfil,
         }
+    }, 200
+
+
+@auth_bp.route("/api/usuarios/<int:id>/alterar-senha", methods=["POST"])
+@jwt_required()
+def api_alterar_senha(id):
+    usuario_id = int(get_jwt_identity())
+
+    if usuario_id != id:
+        return {
+            "erro": "Você só pode alterar a sua própria senha."
+        }, 403
+
+    usuario = db.session.get(
+        UsuarioSistema,
+        usuario_id
+    )
+
+    if not usuario or not usuario.ativo:
+        return {
+            "erro": "Usuário não autorizado."
+        }, 401
+
+    dados = request.get_json() or {}
+
+    senha_atual = dados.get("senha_atual", "").strip()
+    nova_senha = dados.get("nova_senha", "").strip()
+
+    if not senha_atual or not nova_senha:
+        return {
+            "erro": "Informe a senha atual e a nova senha."
+        }, 400
+
+    if usuario.senha != senha_atual:
+        return {
+            "erro": "Senha atual incorreta."
+        }, 400
+
+    if len(nova_senha) < 6:
+        return {
+            "erro": "A nova senha deve ter pelo menos 6 caracteres."
+        }, 400
+
+    if nova_senha == usuario.senha:
+        return {
+            "erro": "A nova senha deve ser diferente da senha atual."
+        }, 400
+
+    usuario.senha = nova_senha
+    db.session.commit()
+
+    return {
+        "mensagem": "Senha alterada com sucesso!"
     }, 200
