@@ -2,7 +2,7 @@
 from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
-from datetime import datetime, timedelta
+from datetime import datetime
 from werkzeug.utils import secure_filename
 import os
 from reportlab.lib.pagesizes import A4
@@ -16,62 +16,45 @@ from flask_jwt_extended import (
     jwt_required,
     get_jwt_identity
 )
+from config import (
+    ALLOWED_EXTENSIONS,
+    CLIENTE_TESTE_EMAIL,
+    CLIENTE_TESTE_SENHA,
+    CORS_ALLOW_HEADERS,
+    CORS_METHODS,
+    CORS_RESOURCES,
+    DB_PATH as db_path,
+    JWT_ACCESS_TOKEN_EXPIRES,
+    JWT_SECRET_KEY,
+    SENHA_ADMIN,
+    SQLALCHEMY_DATABASE_URI,
+    SQLALCHEMY_TRACK_MODIFICATIONS,
+    UPLOAD_FOLDER as upload_folder,
+    USUARIO_ADMIN
+)
 from utils.datas import formatar_data_brasilia
 from utils.valores import converter_valor_brasileiro
 
 app = Flask(__name__)
 
-app.config["JWT_SECRET_KEY"] = os.environ.get(
-    "JWT_SECRET_KEY",
-    "troque-esta-chave-em-producao"
-)
-
-app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=8)
+app.config["JWT_SECRET_KEY"] = JWT_SECRET_KEY
+app.config["JWT_ACCESS_TOKEN_EXPIRES"] = JWT_ACCESS_TOKEN_EXPIRES
 
 jwt = JWTManager(app)
 
 CORS(
     app,
-    resources={
-        r"/api/*": {
-            "origins": [
-                "http://localhost:5173",
-                "http://127.0.0.1:5173",
-                "http://localhost:5174",
-                "http://127.0.0.1:5174"
-            ]
-        }
-    },
-    allow_headers=[
-        "Content-Type",
-        "Authorization"
-    ],
-    methods=[
-        "GET",
-        "POST",
-        "PUT",
-        "PATCH",
-        "DELETE",
-        "OPTIONS"
-    ]
+    resources=CORS_RESOURCES,
+    allow_headers=CORS_ALLOW_HEADERS,
+    methods=CORS_METHODS
 )
-USUARIO_ADMIN = os.environ.get("USUARIO_ADMIN", "admin")
-SENHA_ADMIN = os.environ.get("SENHA_ADMIN", "ramos123")
-
-CLIENTE_TESTE_EMAIL = os.environ.get("CLIENTE_TESTE_EMAIL", "cliente@infinity.com")
-CLIENTE_TESTE_SENHA = os.environ.get("CLIENTE_TESTE_SENHA", "123456")
-
-base_dir = os.path.abspath(os.path.dirname(__file__))
-db_path = os.path.join(base_dir, "database.db")
-
-upload_folder = os.path.join(base_dir, "static", "uploads")
 os.makedirs(upload_folder, exist_ok=True)
 
 app.config["UPLOAD_FOLDER"] = upload_folder
-app.config["ALLOWED_EXTENSIONS"] = {"png", "jpg", "jpeg", "pdf"}
+app.config["ALLOWED_EXTENSIONS"] = ALLOWED_EXTENSIONS
 
-app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///" + db_path
-app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+app.config["SQLALCHEMY_DATABASE_URI"] = SQLALCHEMY_DATABASE_URI
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = SQLALCHEMY_TRACK_MODIFICATIONS
 
 db = SQLAlchemy(app)
 
