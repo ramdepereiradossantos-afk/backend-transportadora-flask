@@ -9,7 +9,6 @@ from flask import send_file
 import io
 import json
 from flask_jwt_extended import (
-    create_access_token,
     jwt_required,
     get_jwt_identity
 )
@@ -108,79 +107,10 @@ from services.compatibilidade_schema import (
 )
 from services.auditoria import registrar_log
 from routes.public import public_bp
+from routes.auth import auth_bp
 
 app.register_blueprint(public_bp)
-
-@app.route("/api/login", methods=["POST"])
-def api_login():
-    dados = request.get_json(silent=True) or {}
-
-    usuario_digitado = str(
-        dados.get("usuario", "")
-    ).strip()
-
-    senha_digitada = str(
-        dados.get("senha", "")
-    ).strip()
-    
-    print("=" * 50)
-    print("USUÁRIO RECEBIDO:", usuario_digitado)
-    print("SENHA RECEBIDA:", senha_digitada)
-
-    if not usuario_digitado or not senha_digitada:
-        return {
-            "erro": "Informe o usuário e a senha."
-        }, 400
-        
-    usuarios = UsuarioSistema.query.all()
-
-    for u in usuarios:
-            print(
-                u.id,
-                 repr(u.usuario),
-                repr(u.senha),
-                u.ativo,
-                repr(u.perfil)
-            )
-
-    usuario = UsuarioSistema.query.filter_by(
-        usuario=usuario_digitado,
-        senha=senha_digitada,
-        ativo=True
-    ).first()
-
-    if not usuario:
-        return {
-            "erro": "Usuário ou senha inválidos."
-        }, 401
-
-    access_token = create_access_token(
-        identity=str(usuario.id),
-        additional_claims={
-            "nome": usuario.nome,
-            "perfil": usuario.perfil,
-            "usuario": usuario.usuario,
-        }
-    )
-
-    registrar_log(
-        "Login no sistema",
-        f"Usuário {usuario.nome} acessou o painel React.",
-        usuario_id=usuario.id,
-        usuario_nome=usuario.nome,
-        perfil=usuario.perfil
-    )
-
-    return {
-        "access_token": access_token,
-        "usuario": {
-            "id": usuario.id,
-            "nome": usuario.nome,
-            "usuario": usuario.usuario,
-            "perfil": usuario.perfil,
-        }
-    }, 200
-
+app.register_blueprint(auth_bp)
 
 @app.route(
     "/api/admin/cotacoes/<int:id>/aprovar",
