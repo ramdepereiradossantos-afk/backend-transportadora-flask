@@ -667,6 +667,19 @@ def api_login():
 )
 @jwt_required()
 def aprovar_cotacao(id):
+    usuario_id = int(get_jwt_identity())
+    usuario = db.session.get(UsuarioSistema, usuario_id)
+
+    if not usuario or not usuario.ativo:
+        return jsonify({"erro": "Usuário não autorizado."}), 401
+
+    if str(usuario.perfil).strip().lower() not in [
+        "administrador", "operador"
+    ]:
+        return jsonify({
+            "erro": "Você não possui permissão para aprovar cotações."
+        }), 403
+
     cotacao = db.session.get(Cotacao, id)
 
     if not cotacao:
@@ -1297,7 +1310,21 @@ def api_buscar_rastreamento(codigo):
     }, 200
     
 @app.route("/api/admin/resumo", methods=["GET"])
+@jwt_required()
 def api_admin_resumo():
+    usuario_id = int(get_jwt_identity())
+    usuario = db.session.get(UsuarioSistema, usuario_id)
+
+    if not usuario or not usuario.ativo:
+        return jsonify({"erro": "Usuário não autorizado."}), 401
+
+    if str(usuario.perfil).strip().lower() not in [
+        "administrador", "operador"
+    ]:
+        return jsonify({
+            "erro": "Você não possui permissão para acessar o resumo administrativo."
+        }), 403
+
     total_cargas = Rastreamento.query.count()
     em_coleta = Rastreamento.query.filter_by(status="Em coleta").count()
     em_transito = Rastreamento.query.filter_by(status="Em trânsito").count()
@@ -1681,6 +1708,18 @@ def api_excluir_carga(id):
 )
 @jwt_required()
 def api_admin_cotacoes():
+    usuario_id = int(get_jwt_identity())
+    usuario = db.session.get(UsuarioSistema, usuario_id)
+
+    if not usuario or not usuario.ativo:
+        return jsonify({"erro": "Usuário não autorizado."}), 401
+
+    if str(usuario.perfil).strip().lower() not in [
+        "administrador", "operador"
+    ]:
+        return jsonify({
+            "erro": "Você não possui permissão para consultar cotações."
+        }), 403
 
     cotacoes = (
         Cotacao.query
@@ -2701,7 +2740,20 @@ def api_criar_ocorrencia(id):
     }
     
 @app.route("/api/admin/ranking-motoristas")
+@jwt_required()
 def api_ranking_motoristas():
+    usuario_id = int(get_jwt_identity())
+    usuario = db.session.get(UsuarioSistema, usuario_id)
+
+    if not usuario or not usuario.ativo:
+        return jsonify({"erro": "Usuário não autorizado."}), 401
+
+    if str(usuario.perfil).strip().lower() not in [
+        "administrador", "operador"
+    ]:
+        return jsonify({
+            "erro": "Você não possui permissão para acessar o ranking de motoristas."
+        }), 403
 
     ranking = db.session.execute(
         db.text("""
@@ -2728,7 +2780,20 @@ def api_ranking_motoristas():
     return lista
 
 @app.route("/api/admin/frota/resumo")
+@jwt_required()
 def api_resumo_frota():
+    usuario_id = int(get_jwt_identity())
+    usuario = db.session.get(UsuarioSistema, usuario_id)
+
+    if not usuario or not usuario.ativo:
+        return jsonify({"erro": "Usuário não autorizado."}), 401
+
+    if str(usuario.perfil).strip().lower() not in [
+        "administrador", "operador"
+    ]:
+        return jsonify({
+            "erro": "Você não possui permissão para acessar o resumo da frota."
+        }), 403
 
     disponiveis = Veiculo.query.filter_by(
         status="Disponível"
@@ -3284,7 +3349,18 @@ def api_relatorio_viagens_pdf():
     )
     
 @app.route("/api/admin/financeiro/resumo")
+@jwt_required()
 def api_resumo_financeiro():
+    usuario_id = int(get_jwt_identity())
+    usuario = db.session.get(UsuarioSistema, usuario_id)
+
+    if not usuario or not usuario.ativo:
+        return jsonify({"erro": "Usuário não autorizado."}), 401
+
+    if str(usuario.perfil).strip().lower() != "administrador":
+        return jsonify({
+            "erro": "Você não possui permissão para acessar informações financeiras."
+        }), 403
 
     cargas = Rastreamento.query.all()
 
@@ -3310,7 +3386,21 @@ def api_resumo_financeiro():
     }
     
 @app.route("/api/admin/alertas")
+@jwt_required()
 def api_admin_alertas():
+    usuario_id = int(get_jwt_identity())
+    usuario = db.session.get(UsuarioSistema, usuario_id)
+
+    if not usuario or not usuario.ativo:
+        return jsonify({"erro": "Usuário não autorizado."}), 401
+
+    if str(usuario.perfil).strip().lower() not in [
+        "administrador", "operador"
+    ]:
+        return jsonify({
+            "erro": "Você não possui permissão para acessar alertas administrativos."
+        }), 403
+
     alertas = []
 
     cargas_atrasadas = Rastreamento.query.filter_by(
@@ -3349,7 +3439,18 @@ def api_admin_alertas():
     return alertas   
 
 @app.route("/api/admin/indicadores")
+@jwt_required()
 def api_indicadores():
+    usuario_id = int(get_jwt_identity())
+    usuario = db.session.get(UsuarioSistema, usuario_id)
+
+    if not usuario or not usuario.ativo:
+        return jsonify({"erro": "Usuário não autorizado."}), 401
+
+    if str(usuario.perfil).strip().lower() != "administrador":
+        return jsonify({
+            "erro": "Você não possui permissão para acessar indicadores financeiros."
+        }), 403
 
     cargas = Rastreamento.query.all()
 
@@ -3760,7 +3861,20 @@ def api_relatorio_financeiro_pdf():
     )  
     
 @app.route("/api/admin/busca")
+@jwt_required()
 def api_busca_global():
+    usuario_id = int(get_jwt_identity())
+    usuario = db.session.get(UsuarioSistema, usuario_id)
+
+    if not usuario or not usuario.ativo:
+        return jsonify({"erro": "Usuário não autorizado."}), 401
+
+    if str(usuario.perfil).strip().lower() not in [
+        "administrador", "operador"
+    ]:
+        return jsonify({
+            "erro": "Você não possui permissão para realizar buscas administrativas."
+        }), 403
 
     termo = request.args.get("q", "").strip()
 
@@ -3905,7 +4019,21 @@ def api_evolucao_viagens():
     return lista   
 
 @app.route("/api/admin/top-rotas", methods=["GET"])
+@jwt_required()
 def api_top_rotas():
+    usuario_id = int(get_jwt_identity())
+    usuario = db.session.get(UsuarioSistema, usuario_id)
+
+    if not usuario or not usuario.ativo:
+        return jsonify({"erro": "Usuário não autorizado."}), 401
+
+    if str(usuario.perfil).strip().lower() not in [
+        "administrador", "operador"
+    ]:
+        return jsonify({
+            "erro": "Você não possui permissão para acessar indicadores de rotas."
+        }), 403
+
     resultados = db.session.query(
         Viagem.origem,
         Viagem.destino,
@@ -4678,7 +4806,21 @@ def api_editar_cliente(id):
     return {"mensagem": "Cliente atualizado com sucesso!"}
 
 @app.route("/api/admin/relatorios/resumo", methods=["GET"])
+@jwt_required()
 def api_relatorios_resumo():
+    usuario_id = int(get_jwt_identity())
+    usuario = db.session.get(UsuarioSistema, usuario_id)
+
+    if not usuario or not usuario.ativo:
+        return jsonify({"erro": "Usuário não autorizado."}), 401
+
+    if str(usuario.perfil).strip().lower() not in [
+        "administrador", "operador"
+    ]:
+        return jsonify({
+            "erro": "Você não possui permissão para acessar relatórios administrativos."
+        }), 403
+
     total_clientes = Cliente.query.count()
     clientes_ativos = Cliente.query.filter_by(ativo=True).count()
     clientes_inativos = Cliente.query.filter_by(ativo=False).count()
