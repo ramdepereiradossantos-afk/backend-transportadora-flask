@@ -20,16 +20,6 @@ admin_usuarios_bp = Blueprint(
 )
 @jwt_required()
 def api_inativar_usuario(id):
-    usuario = db.session.get(
-        UsuarioSistema,
-        id
-    )
-
-    if not usuario:
-        return jsonify({
-            "erro": "Usuário não encontrado."
-        }), 404
-
     usuario_logado_id = int(get_jwt_identity())
     usuario_logado = db.session.get(
         UsuarioSistema,
@@ -45,6 +35,16 @@ def api_inativar_usuario(id):
         return jsonify({
             "erro": "Apenas administradores podem inativar usuários."
         }), 403
+
+    usuario = db.session.get(
+        UsuarioSistema,
+        id
+    )
+
+    if not usuario:
+        return jsonify({
+            "erro": "Usuário não encontrado."
+        }), 404
 
     if usuario.id == usuario_logado.id:
         return jsonify({
@@ -333,18 +333,6 @@ def api_admin_usuarios():
 )
 @jwt_required()
 def api_editar_usuario(id):
-    usuario = db.session.get(
-        UsuarioSistema,
-        id
-    )
-
-    if not usuario:
-        return jsonify({
-            "erro": "Usuário não encontrado."
-        }), 404
-
-    dados = request.get_json(silent=True) or {}
-
     usuario_logado_id = int(get_jwt_identity())
 
     usuario_logado = db.session.get(
@@ -361,6 +349,18 @@ def api_editar_usuario(id):
         return jsonify({
             "erro": "Apenas administradores podem editar usuários."
         }), 403
+
+    usuario = db.session.get(
+        UsuarioSistema,
+        id
+    )
+
+    if not usuario:
+        return jsonify({
+            "erro": "Usuário não encontrado."
+        }), 404
+
+    dados = request.get_json(silent=True) or {}
 
     nome = str(
         dados.get("nome", usuario.nome)
