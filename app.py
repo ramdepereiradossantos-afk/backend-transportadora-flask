@@ -3144,6 +3144,23 @@ def api_inativar_usuario(id):
 )
 @jwt_required()
 def api_buscar_usuario(id):
+    usuario_logado_id = int(get_jwt_identity())
+
+    usuario_logado = db.session.get(
+        UsuarioSistema,
+        usuario_logado_id
+    )
+
+    if not usuario_logado or not usuario_logado.ativo:
+        return jsonify({
+            "erro": "Usuário autenticado não autorizado."
+        }), 401
+
+    if str(usuario_logado.perfil).strip().lower() != "administrador":
+        return jsonify({
+            "erro": "Apenas administradores podem gerenciar usuários."
+        }), 403
+
     usuario = db.session.get(
         UsuarioSistema,
         id
