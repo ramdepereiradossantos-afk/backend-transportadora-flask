@@ -403,37 +403,6 @@ with app.app_context():
         db.session.add(admin_padrao)
         db.session.commit()
 
-@app.route("/api/cotacoes", methods=["POST"])
-def api_criar_cotacao_publica():
-    dados = request.get_json()
-
-    cliente = dados.get("cliente", "").strip()
-    whatsapp = dados.get("whatsapp", "").strip()
-    origem = dados.get("origem", "").strip()
-    destino = dados.get("destino", "").strip()
-    tipo_carga = dados.get("tipoCarga", "").strip()
-    observacoes = dados.get("observacoes", "").strip()
-
-    if not all([cliente, whatsapp, origem, destino, tipo_carga]):
-        return {"erro": "Preencha todos os campos obrigatórios."}, 400
-
-    nova_cotacao = Cotacao(
-        cliente=cliente,
-        whatsapp=whatsapp,
-        origem=origem,
-        destino=destino,
-        tipo_carga=tipo_carga,
-        observacoes=observacoes
-    )
-
-    db.session.add(nova_cotacao)
-    db.session.commit()
-
-    return {
-        "mensagem": "Orçamento enviado com sucesso!",
-        "cotacao_id": nova_cotacao.id
-    }, 201
-    
 @app.route("/api/admin/resumo", methods=["GET"])
 @jwt_required()
 def api_admin_resumo():
