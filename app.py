@@ -1100,7 +1100,7 @@ def api_atualizar_status_viagem_motorista(id):
         }), 403
 
     motorista = Motorista.query.filter_by(
-        usuario=usuario_sistema.usuario
+        usuario_sistema_id=usuario_sistema.id
     ).first()
 
     if not motorista:
@@ -1334,7 +1334,7 @@ def api_ocorrencias_viagem_motorista(id):
         }), 403
 
     motorista = Motorista.query.filter_by(
-        usuario=usuario_sistema.usuario
+        usuario_sistema_id=usuario_sistema.id
     ).first()
 
     if not motorista:
@@ -1564,7 +1564,7 @@ def api_consultar_comprovante_motorista(id):
         }), 403
 
     motorista = Motorista.query.filter_by(
-        usuario=usuario_sistema.usuario
+        usuario_sistema_id=usuario_sistema.id
     ).first()
 
     if not motorista:
@@ -1710,7 +1710,7 @@ def api_upload_arquivo_comprovante_motorista(id):
         }), 403
 
     motorista = Motorista.query.filter_by(
-        usuario=usuario_sistema.usuario
+        usuario_sistema_id=usuario_sistema.id
     ).first()
 
     if not motorista:
@@ -1885,7 +1885,7 @@ def api_listar_arquivos_comprovante_motorista(id):
         }), 403
 
     motorista = Motorista.query.filter_by(
-        usuario=usuario_sistema.usuario
+        usuario_sistema_id=usuario_sistema.id
     ).first()
 
     if not motorista:
@@ -2327,7 +2327,7 @@ def api_listar_localizacoes_motorista(id):
         }), 403
 
     motorista = Motorista.query.filter_by(
-        usuario=usuario_sistema.usuario
+        usuario_sistema_id=usuario_sistema.id
     ).first()
 
     if not motorista:
@@ -2397,7 +2397,7 @@ def api_criar_localizacao_motorista(id):
         }), 403
 
     motorista = Motorista.query.filter_by(
-        usuario=usuario_sistema.usuario
+        usuario_sistema_id=usuario_sistema.id
     ).first()
 
     if not motorista:
@@ -2765,7 +2765,7 @@ def api_detalhe_viagem_motorista(id):
         }), 403
 
     motorista = Motorista.query.filter_by(
-        usuario=usuario_sistema.usuario
+        usuario_sistema_id=usuario_sistema.id
     ).first()
 
     if not motorista:
@@ -2854,7 +2854,7 @@ def api_historico_viagem_motorista(id):
         }), 403
 
     motorista = Motorista.query.filter_by(
-        usuario=usuario_sistema.usuario
+        usuario_sistema_id=usuario_sistema.id
     ).first()
 
     if not motorista:
@@ -2920,7 +2920,7 @@ def api_criar_ocorrencia_motorista(id):
         }), 403
 
     motorista = Motorista.query.filter_by(
-        usuario=usuario_sistema.usuario
+        usuario_sistema_id=usuario_sistema.id
     ).first()
 
     if not motorista:
@@ -3762,7 +3762,7 @@ def api_motorista_minhas_viagens():
         }), 403
 
     motorista = Motorista.query.filter_by(
-        usuario=usuario_sistema.usuario
+        usuario_sistema_id=usuario_sistema.id
     ).first()
 
     if not motorista:
@@ -4130,7 +4130,7 @@ def api_finalizar_viagem_motorista(viagem_id):
         }), 403
 
     motorista_logado = Motorista.query.filter_by(
-        usuario=usuario.usuario
+        usuario_sistema_id=usuario.id
     ).first()
 
     if not motorista_logado:
