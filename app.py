@@ -107,13 +107,9 @@ from services.compatibilidade_schema import (
     adicionar_colunas_operacionais
 )
 from services.auditoria import registrar_log
+from routes.public import public_bp
 
-@app.route("/")
-def index():
-    return {
-        "mensagem": "Backend da Transportadora Ramos ativo.",
-        "status": "online"
-    }
+app.register_blueprint(public_bp)
 
 @app.route("/api/login", methods=["POST"])
 def api_login():
@@ -437,29 +433,6 @@ def api_criar_cotacao_publica():
         "mensagem": "Orçamento enviado com sucesso!",
         "cotacao_id": nova_cotacao.id
     }, 201
-    
-@app.route("/api/rastreamento/<codigo>", methods=["GET"])
-def api_buscar_rastreamento(codigo):
-    codigo = codigo.strip().upper()
-
-    carga = Rastreamento.query.filter_by(codigo=codigo).first()
-
-    if not carga:
-        return {"erro": "Código de rastreamento não encontrado."}, 404
-
-    ultima_atualizacao = ""
-    if carga.ultima_atualizacao:
-        ultima_atualizacao = formatar_data_brasilia(carga.ultima_atualizacao)
-
-    return {
-        "id": carga.id,
-        "codigo": carga.codigo,
-        "cliente": carga.cliente,
-        "status": carga.status,
-        "local_atual": carga.local_atual,
-        "destino": carga.destino,
-        "ultima_atualizacao": ultima_atualizacao
-    }, 200
     
 @app.route("/api/admin/resumo", methods=["GET"])
 @jwt_required()
