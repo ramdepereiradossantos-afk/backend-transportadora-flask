@@ -77,19 +77,6 @@ data_criacao = db.Column(
     
     
 
-class LocalizacaoMotorista(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    motorista_id = db.Column(db.Integer, db.ForeignKey('motorista.id'))
-    rastreamento_id = db.Column(db.Integer, db.ForeignKey('rastreamento.id'))
-
-    latitude = db.Column(db.String(50))
-    longitude = db.Column(db.String(50))
-
-    data_registro = db.Column(db.DateTime, default=datetime.utcnow)
-
-    motorista = db.relationship('Motorista')
-    rastreamento = db.relationship('Rastreamento')
-
 class Rota(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     nome = db.Column(db.String(120), nullable=False)
@@ -155,180 +142,15 @@ class Viagem(db.Model):
     carga = db.relationship("Rastreamento", backref="viagens")
     motorista = db.relationship("Motorista", backref="viagens")
     veiculo = db.relationship("Veiculo", backref="viagens")
-    
-class HistoricoOperacao(db.Model):
-    _tablename__ = "historico_operacao"
 
-    id = db.Column(
-        db.Integer,
-        primary_key=True
-    )
-
-    viagem_id = db.Column(
-        db.Integer,
-        db.ForeignKey("viagem.id"),
-        nullable=False
-    )
-
-    tipo = db.Column(
-        db.String(40),
-        nullable=False
-    )
-
-    descricao = db.Column(
-        db.Text,
-        nullable=False
-    )
-
-    data_hora = db.Column(
-        db.DateTime,
-        default=datetime.utcnow
-    )
-
-    viagem = db.relationship(
-        "Viagem",
-        backref="historico_operacional"
-    )
-    
-class HistoricoViagem(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-
-    viagem_id = db.Column(db.Integer, db.ForeignKey("viagem.id"), nullable=False)
-
-    status = db.Column(db.String(50), nullable=False)
-    observacao = db.Column(db.Text, nullable=True)
-    data_evento = db.Column(db.DateTime, default=datetime.utcnow)
-
-    viagem = db.relationship("Viagem", backref="historico")
-
-
-class HistoricoRastreamento(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    rastreamento_id = db.Column(db.Integer, db.ForeignKey('rastreamento.id'), nullable=False)
-    status = db.Column(db.String(50), nullable=False)
-    local = db.Column(db.String(100), nullable=False)
-    observacao = db.Column(db.Text)
-    data_evento = db.Column(db.DateTime, default=datetime.utcnow)
-
-    rastreamento = db.relationship('Rastreamento', backref='historico')
-
-
-class OcorrenciaEntrega(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    rastreamento_id = db.Column(db.Integer, db.ForeignKey('rastreamento.id'), nullable=False)
-    titulo = db.Column(db.String(100), nullable=False)
-    descricao = db.Column(db.Text, nullable=False)
-    data_ocorrencia = db.Column(db.DateTime, default=datetime.utcnow)
-
-    rastreamento = db.relationship('Rastreamento', backref='ocorrencias')
-    
-class OcorrenciaViagem(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-
-    viagem_id = db.Column(
-        db.Integer,
-        db.ForeignKey("viagem.id"),
-        nullable=False
-    )
-
-    descricao = db.Column(
-        db.Text,
-        nullable=False
-    )
-
-    data_criacao = db.Column(
-        db.DateTime,
-        default=datetime.utcnow
-    )
-
-    viagem = db.relationship(
-        "Viagem",
-        backref="ocorrencias"
-    )
-    
-class ComprovanteEntrega(db.Model):
-    
-    __tablename__ = "finalizacao_entrega"
-    
-    id = db.Column(
-        db.Integer,
-        primary_key=True
-    )
-
-    viagem_id = db.Column(
-        db.Integer,
-        db.ForeignKey("viagem.id"),
-        nullable=False
-    )
-
-    recebedor = db.Column(
-        db.String(120),
-        nullable=False
-    )
-
-    observacao = db.Column(
-        db.Text
-    )
-
-    data_entrega = db.Column(
-        db.DateTime,
-        default=datetime.utcnow
-    )
-
-    viagem = db.relationship(
-        "Viagem",
-        backref="comprovantes"
-    )  
-    
-class ArquivoComprovanteViagem(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-
-    viagem_id = db.Column(
-        db.Integer,
-        db.ForeignKey("viagem.id"),
-        nullable=False
-    )
-
-    nome_arquivo = db.Column(db.String(255), nullable=False)
-
-    data_upload = db.Column(
-        db.DateTime,
-        default=datetime.utcnow
-    )
-
-    viagem = db.relationship(
-        "Viagem",
-        backref="arquivos_comprovante"
-    )    
-    
-class LocalizacaoViagem(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-
-    viagem_id = db.Column(
-        db.Integer,
-        db.ForeignKey("viagem.id"),
-        nullable=False
-    )
-
-    localizacao = db.Column(
-        db.String(180),
-        nullable=False
-    )
-
-    observacao = db.Column(
-        db.Text
-    )
-
-    data_registro = db.Column(
-        db.DateTime,
-        default=datetime.utcnow
-    )
-
-    viagem = db.relationship(
-        "Viagem",
-        backref="localizacoes"
-    ) 
-    
+from models.historicos import (
+    HistoricoOperacao,
+    HistoricoRastreamento,
+    HistoricoViagem
+)
+from models.ocorrencias import OcorrenciaEntrega, OcorrenciaViagem
+from models.comprovantes import ComprovanteEntrega, ArquivoComprovanteViagem
+from models.localizacoes import LocalizacaoMotorista, LocalizacaoViagem
 
 @app.route("/")
 def index():
@@ -2686,6 +2508,27 @@ def api_upload_arquivo_comprovante(id):
             "erro": "Você não possui permissão para anexar comprovantes."
         }), 403
 
+    viagem = db.session.get(Viagem, id)
+
+    if not viagem:
+        return jsonify({"erro": "Viagem não encontrada."}), 404
+
+    carga = db.session.get(
+        Rastreamento,
+        viagem.rastreamento_id
+    )
+
+    if (
+        str(viagem.status).strip().lower() == "cancelada"
+        or (
+            carga
+            and str(carga.status).strip().lower() == "cancelada"
+        )
+    ):
+        return jsonify({
+            "erro": "Não é possível adicionar comprovante a uma viagem cancelada."
+        }), 409
+
     arquivo = request.files.get("arquivo")
 
     if not arquivo:
@@ -2770,6 +2613,22 @@ def api_upload_arquivo_comprovante_motorista(id):
                 "a este motorista."
             )
         }), 404
+
+    carga = db.session.get(
+        Rastreamento,
+        viagem.rastreamento_id
+    )
+
+    if (
+        str(viagem.status).strip().lower() == "cancelada"
+        or (
+            carga
+            and str(carga.status).strip().lower() == "cancelada"
+        )
+    ):
+        return jsonify({
+            "erro": "Não é possível adicionar comprovante a uma viagem cancelada."
+        }), 409
 
     arquivo = request.files.get("arquivo")
 
@@ -5562,6 +5421,11 @@ def api_finalizar_viagem(viagem_id):
             "erro": "A carga vinculada à viagem não foi encontrada."
         }), 404
 
+    if str(carga.status).strip().lower() == "cancelada":
+        return jsonify({
+            "erro": "Não é possível finalizar uma viagem cancelada."
+        }), 409
+
     try:
         comprovante_existente = (
             ComprovanteEntrega.query
@@ -5753,6 +5617,11 @@ def api_finalizar_viagem_motorista(viagem_id):
                 "não foi encontrada."
             )
         }), 404
+
+    if str(carga.status).strip().lower() == "cancelada":
+        return jsonify({
+            "erro": "Não é possível finalizar uma viagem cancelada."
+        }), 409
 
     try:
         comprovante_existente = (
