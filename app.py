@@ -1,7 +1,5 @@
 
 from flask import Flask, request, jsonify
-from flask_sqlalchemy import SQLAlchemy
-from flask_cors import CORS
 from datetime import datetime
 from werkzeug.utils import secure_filename
 import os
@@ -11,7 +9,6 @@ from flask import send_file
 import io
 import json
 from flask_jwt_extended import (
-    JWTManager,
     create_access_token,
     jwt_required,
     get_jwt_identity
@@ -32,6 +29,7 @@ from config import (
     UPLOAD_FOLDER as upload_folder,
     USUARIO_ADMIN
 )
+from extensions import cors, db, jwt
 from utils.datas import formatar_data_brasilia
 from utils.valores import converter_valor_brasileiro
 
@@ -39,24 +37,21 @@ app = Flask(__name__)
 
 app.config["JWT_SECRET_KEY"] = JWT_SECRET_KEY
 app.config["JWT_ACCESS_TOKEN_EXPIRES"] = JWT_ACCESS_TOKEN_EXPIRES
+app.config["UPLOAD_FOLDER"] = upload_folder
+app.config["ALLOWED_EXTENSIONS"] = ALLOWED_EXTENSIONS
+app.config["SQLALCHEMY_DATABASE_URI"] = SQLALCHEMY_DATABASE_URI
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = SQLALCHEMY_TRACK_MODIFICATIONS
 
-jwt = JWTManager(app)
+os.makedirs(upload_folder, exist_ok=True)
 
-CORS(
+db.init_app(app)
+jwt.init_app(app)
+cors.init_app(
     app,
     resources=CORS_RESOURCES,
     allow_headers=CORS_ALLOW_HEADERS,
     methods=CORS_METHODS
 )
-os.makedirs(upload_folder, exist_ok=True)
-
-app.config["UPLOAD_FOLDER"] = upload_folder
-app.config["ALLOWED_EXTENSIONS"] = ALLOWED_EXTENSIONS
-
-app.config["SQLALCHEMY_DATABASE_URI"] = SQLALCHEMY_DATABASE_URI
-app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = SQLALCHEMY_TRACK_MODIFICATIONS
-
-db = SQLAlchemy(app)
 
 class Cotacao(db.Model):
     id = db.Column(db.Integer, primary_key=True)
