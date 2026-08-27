@@ -54,6 +54,9 @@ cors.init_app(
 )
 
 from models.cotacoes import Carga, Cotacao
+from models.usuarios import UsuarioSistema
+from models.clientes import Cliente, ClienteUsuario
+from models.auditoria import LogAcao
 
 motorista_id = db.Column(
     db.Integer,
@@ -72,106 +75,6 @@ data_criacao = db.Column(
 )
     
     
-
-class ClienteUsuario(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    cliente_id = db.Column(db.Integer, db.ForeignKey('cliente.id'), nullable=True)
-    cliente_relacao = db.relationship('Cliente', backref='usuarios_acesso')
-
-    nome = db.Column(db.String(100), nullable=False)
-    empresa = db.Column(db.String(100), nullable=False, unique=True)
-    email = db.Column(db.String(120), nullable=False, unique=True)
-    senha = db.Column(db.String(120), nullable=False)
-    ativo = db.Column(db.Boolean, default=True)
-    data_criacao = db.Column(db.DateTime, default=datetime.utcnow)
-
-class UsuarioSistema(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    nome = db.Column(db.String(120), nullable=False)
-    usuario = db.Column(db.String(80), nullable=False, unique=True)
-    email = db.Column(db.String(120), nullable=True, default="")
-    senha = db.Column(db.String(120), nullable=False)
-    perfil = db.Column(db.String(30), nullable=False, default="operador")
-    ativo = db.Column(db.Boolean, default=True)
-    data_criacao = db.Column(db.DateTime, default=datetime.utcnow)
-
-class LogAcao(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-
-    usuario_id = db.Column(
-        db.Integer,
-        db.ForeignKey("usuario_sistema.id"),
-        nullable=True
-    )
-
-    usuario_nome = db.Column(
-        db.String(120),
-        nullable=True
-    )
-
-    perfil = db.Column(
-        db.String(30),
-        nullable=True
-    )
-
-    modulo = db.Column(
-        db.String(80),
-        nullable=True
-    )
-
-    acao = db.Column(
-        db.String(120),
-        nullable=False
-    )
-
-    entidade = db.Column(
-        db.String(80),
-        nullable=True
-    )
-
-    entidade_id = db.Column(
-        db.Integer,
-        nullable=True
-    )
-
-    detalhes = db.Column(
-        db.Text,
-        nullable=True
-    )
-
-    antes = db.Column(
-        db.Text,
-        nullable=True
-    )
-
-    depois = db.Column(
-        db.Text,
-        nullable=True
-    )
-
-    data_acao = db.Column(
-        db.DateTime,
-        default=datetime.utcnow
-    )
-
-    usuario = db.relationship(
-        "UsuarioSistema",
-        backref="logs"
-    )
-
-class Cliente(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    razao_social = db.Column(db.String(150), nullable=False)
-    nome_fantasia = db.Column(db.String(150), nullable=True)
-    documento = db.Column(db.String(30), nullable=True)
-    responsavel = db.Column(db.String(100), nullable=True)
-    email = db.Column(db.String(120), nullable=True)
-    telefone = db.Column(db.String(30), nullable=True)
-    endereco = db.Column(db.String(200), nullable=True)
-    cidade = db.Column(db.String(100), nullable=True)
-    estado = db.Column(db.String(2), nullable=True)
-    ativo = db.Column(db.Boolean, default=True)
-    data_criacao = db.Column(db.DateTime, default=datetime.utcnow)
 
 class Motorista(db.Model):
     id = db.Column(db.Integer, primary_key=True)
