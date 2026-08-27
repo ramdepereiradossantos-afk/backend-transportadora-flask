@@ -2066,7 +2066,23 @@ def api_criar_ocorrencia_motorista(id):
 @app.route("/api/usuarios/<int:id>/alterar-senha", methods=["POST"])
 @jwt_required()
 def api_alterar_senha(id):
-    usuario = UsuarioSistema.query.get_or_404(id)
+    usuario_id = int(get_jwt_identity())
+
+    if usuario_id != id:
+        return {
+            "erro": "Você só pode alterar a sua própria senha."
+        }, 403
+
+    usuario = db.session.get(
+        UsuarioSistema,
+        usuario_id
+    )
+
+    if not usuario or not usuario.ativo:
+        return {
+            "erro": "Usuário não autorizado."
+        }, 401
+
     dados = request.get_json() or {}
 
     senha_atual = dados.get("senha_atual", "").strip()
