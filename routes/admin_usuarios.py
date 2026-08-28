@@ -2,7 +2,7 @@ from flask import Blueprint, jsonify, request
 from flask_jwt_extended import get_jwt_identity, jwt_required
 
 from extensions import db
-from models.clientes import ClienteUsuario
+from models.clientes import Cliente, ClienteUsuario
 from models.recursos import Motorista
 from models.usuarios import UsuarioSistema
 from services.auditoria import registrar_log
@@ -133,6 +133,10 @@ def api_buscar_usuario(id):
             "erro": "Usuário não encontrado."
         }), 404
 
+    cliente_usuario = ClienteUsuario.query.filter_by(
+        usuario_sistema_id=usuario.id
+    ).first()
+
     return jsonify({
         "id": usuario.id,
         "nome": usuario.nome,
@@ -140,6 +144,11 @@ def api_buscar_usuario(id):
         "email": usuario.email or "",
         "perfil": usuario.perfil,
         "ativo": usuario.ativo,
+        "cliente_id": (
+            cliente_usuario.cliente_id
+            if cliente_usuario
+            else None
+        ),
     }), 200
 
 @admin_usuarios_bp.route(
@@ -225,6 +234,33 @@ def api_admin_usuarios():
             "erro": "Perfil inválido."
         }), 400
 
+    cliente_comercial = None
+
+    if perfil == "cliente":
+        if not email:
+            return jsonify({
+                "erro": "O e-mail é obrigatório para usuários clientes."
+            }), 400
+
+        cliente_id = dados.get("cliente_id")
+
+        try:
+            cliente_id = int(cliente_id)
+        except (TypeError, ValueError):
+            return jsonify({
+                "erro": "Selecione um cliente comercial ativo."
+            }), 400
+
+        cliente_comercial = db.session.get(
+            Cliente,
+            cliente_id
+        )
+
+        if not cliente_comercial or not cliente_comercial.ativo:
+            return jsonify({
+                "erro": "Selecione um cliente comercial ativo."
+            }), 400
+
     usuario_existente = UsuarioSistema.query.filter_by(
         usuario=nome_usuario
     ).first()
@@ -272,11 +308,13 @@ def api_admin_usuarios():
 
         if perfil == "cliente":
             cliente_login = ClienteUsuario(
+                usuario_sistema_id=novo_usuario.id,
+                cliente_id=cliente_comercial.id,
                 nome=nome,
-                empresa=nome,
+                empresa=cliente_comercial.razao_social,
                 email=email,
                 senha=senha,
-                ativo=True
+                ativo=novo_usuario.ativo
             )
 
             db.session.add(cliente_login)
@@ -405,6 +443,68 @@ def api_editar_usuario(id):
             "erro": "Perfil inválido."
         }), 400
 
+    perfil_anterior = str(
+        usuario.perfil
+    ).strip().lower()
+
+    cliente_usuario = ClienteUsuario.query.filter_by(
+        usuario_sistema_id=usuario.id
+    ).first()
+
+    cliente_comercial = None
+
+    if perfil == "cliente":
+        if not email:
+            return jsonify({
+                "erro": "O e-mail é obrigatório para usuários clientes."
+            }), 400
+
+        cliente_id = dados.get("cliente_id")
+
+        try:
+            cliente_id = int(cliente_id)
+        except (TypeError, ValueError):
+            return jsonify({
+                "erro": "Selecione um cliente comercial ativo."
+            }), 400
+
+        cliente_comercial = db.session.get(
+            Cliente,
+            cliente_id
+        )
+
+        cliente_atual_inativo = (
+            perfil_anterior == "cliente"
+            and cliente_usuario
+            and cliente_usuario.cliente_id == cliente_id
+        )
+
+        if (
+            not cliente_comercial
+            or (
+                not cliente_comercial.ativo
+                and not cliente_atual_inativo
+            )
+        ):
+            return jsonify({
+                "erro": "Selecione um cliente comercial ativo."
+            }), 400
+
+        if not cliente_usuario:
+            cliente_legado = ClienteUsuario.query.filter_by(
+                email=email,
+                usuario_sistema_id=None
+            ).first()
+
+            if cliente_legado:
+                return jsonify({
+                    "erro": (
+                        "Já existe um acesso de cliente legado "
+                        "com este e-mail. Regularize o vínculo "
+                        "antes de alterar o perfil."
+                    )
+                }), 409
+
     usuario_duplicado = UsuarioSistema.query.filter(
         UsuarioSistema.usuario == nome_usuario,
         UsuarioSistema.id != usuario.id
@@ -426,14 +526,24 @@ def api_editar_usuario(id):
                 "erro": "Este e-mail já está cadastrado no sistema."
             }), 409
 
-        cliente_email_duplicado = ClienteUsuario.query.filter(
+        consulta_cliente_email = ClienteUsuario.query.filter(
             ClienteUsuario.email == email
-        ).first()
+        )
+
+        if cliente_usuario:
+            consulta_cliente_email = consulta_cliente_email.filter(
+                ClienteUsuario.id != cliente_usuario.id
+            )
+
+        cliente_email_duplicado = consulta_cliente_email.first()
 
         if (
             cliente_email_duplicado
-            and cliente_email_duplicado.email
-            != (usuario.email or "")
+            and (
+                perfil == "cliente"
+                or cliente_email_duplicado.email
+                != (usuario.email or "")
+            )
         ):
             return jsonify({
                 "erro": (
@@ -475,6 +585,29 @@ def api_editar_usuario(id):
 
         if redefinir_senha:
             usuario.senha = nova_senha
+
+        if perfil == "cliente":
+            if not cliente_usuario:
+                cliente_usuario = ClienteUsuario(
+                    usuario_sistema_id=usuario.id,
+                    cliente_id=cliente_comercial.id,
+                    nome=nome,
+                    empresa=cliente_comercial.razao_social,
+                    email=email,
+                    senha=usuario.senha,
+                    ativo=usuario.ativo
+                )
+
+                db.session.add(cliente_usuario)
+            else:
+                cliente_usuario.cliente_id = cliente_comercial.id
+                cliente_usuario.empresa = cliente_comercial.razao_social
+                cliente_usuario.nome = nome
+                cliente_usuario.email = email
+                cliente_usuario.ativo = usuario.ativo
+
+                if redefinir_senha:
+                    cliente_usuario.senha = usuario.senha
 
         dados_depois = {
             "nome": usuario.nome,
