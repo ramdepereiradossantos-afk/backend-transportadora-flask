@@ -17,6 +17,22 @@ portal_cliente_bp = Blueprint(
 )
 
 
+def _obter_cliente_usuario(usuario_sistema):
+    cliente_usuario = ClienteUsuario.query.filter_by(
+        usuario_sistema_id=usuario_sistema.id,
+        ativo=True
+    ).first()
+
+    if cliente_usuario:
+        return cliente_usuario
+
+    return ClienteUsuario.query.filter_by(
+        email=usuario_sistema.email,
+        ativo=True,
+        usuario_sistema_id=None
+    ).first()
+
+
 @portal_cliente_bp.route(
     "/api/cliente/minhas-cargas",
     methods=["GET"]
@@ -40,10 +56,7 @@ def api_cliente_minhas_cargas():
             "erro": "Acesso permitido somente para clientes."
         }), 403
 
-    cliente_usuario = ClienteUsuario.query.filter_by(
-        email=usuario_sistema.email,
-        ativo=True
-    ).first()
+    cliente_usuario = _obter_cliente_usuario(usuario_sistema)
 
     if not cliente_usuario:
         return jsonify({
@@ -127,10 +140,7 @@ def api_detalhe_carga_cliente_logado(carga_id):
             "erro": "Acesso permitido somente para clientes."
         }, 403
 
-    cliente_usuario = ClienteUsuario.query.filter_by(
-        email=usuario_sistema.email,
-        ativo=True
-    ).first()
+    cliente_usuario = _obter_cliente_usuario(usuario_sistema)
 
     if not cliente_usuario:
         return {
@@ -210,10 +220,7 @@ def api_listar_ocorrencias_cliente(carga_id):
             "erro": "Acesso permitido somente para clientes."
         }, 403
 
-    cliente_usuario = ClienteUsuario.query.filter_by(
-        email=usuario_sistema.email,
-        ativo=True
-    ).first()
+    cliente_usuario = _obter_cliente_usuario(usuario_sistema)
 
     if not cliente_usuario:
         return {
@@ -282,10 +289,7 @@ def api_criar_ocorrencia_cliente(carga_id):
             "erro": "Acesso permitido somente para clientes."
         }, 403
 
-    cliente_usuario = ClienteUsuario.query.filter_by(
-        email=usuario_sistema.email,
-        ativo=True
-    ).first()
+    cliente_usuario = _obter_cliente_usuario(usuario_sistema)
 
     if not cliente_usuario:
         return {
@@ -365,10 +369,7 @@ def api_comprovantes_carga_cliente(carga_id):
             "erro": "Acesso permitido somente para clientes."
         }, 403
 
-    cliente_usuario = ClienteUsuario.query.filter_by(
-        email=usuario_sistema.email,
-        ativo=True
-    ).first()
+    cliente_usuario = _obter_cliente_usuario(usuario_sistema)
 
     if not cliente_usuario:
         return {
@@ -470,10 +471,7 @@ def api_perfil_cliente():
             "erro": "Acesso permitido somente para clientes."
         }), 403
 
-    cliente_usuario = ClienteUsuario.query.filter_by(
-        email=usuario_sistema.email,
-        ativo=True
-    ).first()
+    cliente_usuario = _obter_cliente_usuario(usuario_sistema)
 
     if not cliente_usuario:
         return jsonify({
