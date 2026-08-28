@@ -112,7 +112,15 @@ def api_cliente_minhas_cargas():
 def api_detalhe_carga_cliente_logado(carga_id):
     usuario_id = int(get_jwt_identity())
 
-    usuario_sistema = UsuarioSistema.query.get_or_404(usuario_id)
+    usuario_sistema = db.session.get(
+        UsuarioSistema,
+        usuario_id
+    )
+
+    if not usuario_sistema or not usuario_sistema.ativo:
+        return jsonify({
+            "erro": "Usuário não autorizado."
+        }), 401
 
     if usuario_sistema.perfil.lower() != "cliente":
         return {
@@ -187,7 +195,15 @@ def api_detalhe_carga_cliente_logado(carga_id):
 def api_listar_ocorrencias_cliente(carga_id):
     usuario_id = int(get_jwt_identity())
 
-    usuario_sistema = UsuarioSistema.query.get_or_404(usuario_id)
+    usuario_sistema = db.session.get(
+        UsuarioSistema,
+        usuario_id
+    )
+
+    if not usuario_sistema or not usuario_sistema.ativo:
+        return jsonify({
+            "erro": "Usuário não autorizado."
+        }), 401
 
     if usuario_sistema.perfil.lower() != "cliente":
         return {
@@ -251,7 +267,15 @@ def api_listar_ocorrencias_cliente(carga_id):
 def api_criar_ocorrencia_cliente(carga_id):
     usuario_id = int(get_jwt_identity())
 
-    usuario_sistema = UsuarioSistema.query.get_or_404(usuario_id)
+    usuario_sistema = db.session.get(
+        UsuarioSistema,
+        usuario_id
+    )
+
+    if not usuario_sistema or not usuario_sistema.ativo:
+        return jsonify({
+            "erro": "Usuário não autorizado."
+        }), 401
 
     if usuario_sistema.perfil.lower() != "cliente":
         return {
@@ -436,10 +460,10 @@ def api_perfil_cliente():
         usuario_id
     )
 
-    if not usuario_sistema:
+    if not usuario_sistema or not usuario_sistema.ativo:
         return jsonify({
-            "erro": "Usuário não encontrado."
-        }), 404
+            "erro": "Usuário não autorizado."
+        }), 401
 
     if str(usuario_sistema.perfil).strip().lower() != "cliente":
         return jsonify({
