@@ -49,6 +49,7 @@ cors.init_app(
 )
 
 from models.usuarios import UsuarioSistema
+from models.clientes import Cliente
 from models.auditoria import LogAcao
 from models.recursos import Motorista, Veiculo
 from models.rotas import Rota
@@ -227,6 +228,7 @@ def api_admin_carga_detalhe(id):
         "id": carga.id,
         "codigo": carga.codigo,
         "cliente": carga.cliente,
+        "cliente_id": carga.cliente_id,
         "local_atual": carga.local_atual,
         "destino": carga.destino,
         "motorista_id": carga.motorista_id,
@@ -278,7 +280,30 @@ def api_criar_carga():
     dados = request.get_json()
 
     codigo = dados.get("codigo", "").strip().upper()
-    cliente = dados.get("cliente", "").strip()
+    cliente_id_recebido = dados.get("cliente_id")
+
+    if cliente_id_recebido not in [None, ""]:
+        try:
+            cliente_id = int(cliente_id_recebido)
+        except (TypeError, ValueError):
+            return {"erro": "Informe um cliente válido."}, 400
+
+        cliente_cadastrado = db.session.get(
+            Cliente,
+            cliente_id
+        )
+
+        if not cliente_cadastrado:
+            return {"erro": "Cliente não encontrado."}, 404
+
+        if not cliente_cadastrado.ativo:
+            return {"erro": "O cliente informado está inativo."}, 400
+
+        cliente = cliente_cadastrado.razao_social.strip()
+    else:
+        cliente_id = None
+        cliente = dados.get("cliente", "").strip()
+
     status = dados.get("status", "").strip()
     local_atual = dados.get("local_atual", "").strip()
     destino = dados.get("destino", "").strip()
@@ -294,6 +319,7 @@ def api_criar_carga():
     nova_carga = Rastreamento()
     nova_carga.codigo = codigo
     nova_carga.cliente = cliente
+    nova_carga.cliente_id = cliente_id
     nova_carga.status = status
     nova_carga.local_atual = local_atual
     nova_carga.destino = destino
@@ -347,11 +373,39 @@ def api_editar_carga(id):
     carga = Rastreamento.query.get_or_404(id)
     dados = request.get_json() or {}
 
+    cliente_id_recebido = dados.get("cliente_id")
+
+    if cliente_id_recebido not in [None, ""]:
+        try:
+            cliente_id = int(cliente_id_recebido)
+        except (TypeError, ValueError):
+            return {"erro": "Informe um cliente válido."}, 400
+
+        cliente_cadastrado = db.session.get(
+            Cliente,
+            cliente_id
+        )
+
+        if not cliente_cadastrado:
+            return {"erro": "Cliente não encontrado."}, 404
+
+        if not cliente_cadastrado.ativo:
+            return {"erro": "O cliente informado está inativo."}, 400
+
+        cliente = cliente_cadastrado.razao_social.strip()
+    else:
+        cliente_id = None
+        cliente = dados.get("cliente", "").strip()
+
     # Guarda os dados anteriores antes de alterar
     local_anterior = carga.local_atual
 
     carga.codigo = dados.get("codigo", "").strip().upper()
-    carga.cliente = dados.get("cliente", "").strip()
+    carga.cliente = cliente
+
+    if cliente_id is not None:
+        carga.cliente_id = cliente_id
+
     carga.local_atual = dados.get("local_atual", "").strip()
     carga.destino = dados.get("destino", "").strip()
     carga.ultima_atualizacao = datetime.utcnow()
