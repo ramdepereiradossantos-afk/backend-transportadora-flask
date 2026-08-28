@@ -4,12 +4,30 @@ from extensions import db
 
 
 class ClienteUsuario(db.Model):
+    __table_args__ = (
+        db.Index(
+            'uq_cliente_usuario_usuario_sistema_id',
+            'usuario_sistema_id',
+            unique=True,
+        ),
+    )
+
     id = db.Column(db.Integer, primary_key=True)
     cliente_id = db.Column(db.Integer, db.ForeignKey('cliente.id'), nullable=True)
     cliente_relacao = db.relationship('Cliente', backref='usuarios_acesso')
+    usuario_sistema_id = db.Column(
+        db.Integer,
+        db.ForeignKey('usuario_sistema.id'),
+        nullable=True,
+    )
+    usuario_sistema = db.relationship(
+        'UsuarioSistema',
+        foreign_keys=[usuario_sistema_id],
+        uselist=False,
+    )
 
     nome = db.Column(db.String(100), nullable=False)
-    empresa = db.Column(db.String(100), nullable=False, unique=True)
+    empresa = db.Column(db.String(100), nullable=False)
     email = db.Column(db.String(120), nullable=False, unique=True)
     senha = db.Column(db.String(120), nullable=False)
     ativo = db.Column(db.Boolean, default=True)

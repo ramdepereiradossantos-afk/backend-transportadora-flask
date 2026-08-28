@@ -108,10 +108,47 @@ def adicionar_colunas_operacionais():
             coluna[1] for coluna in cursor.fetchall()
         ]
 
-        if "cliente_id" not in colunas_cliente_usuario:
+        colunas_estruturais_cliente_usuario = {
+            "cliente_id",
+            "usuario_sistema_id",
+        }
+        if not colunas_estruturais_cliente_usuario.issubset(
+            colunas_cliente_usuario
+        ):
+            raise RuntimeError(
+                "Schema legado de cliente_usuario detectado. "
+                "Execute a migração estrutural controlada."
+            )
+
+        cursor.execute("PRAGMA index_list(cliente_usuario)")
+        indices_cliente_usuario = cursor.fetchall()
+        colunas_indices_unicos = {}
+
+        for indice in indices_cliente_usuario:
+            nome_indice = indice[1]
+            indice_unico = bool(indice[2])
+
+            if not indice_unico:
+                continue
+
+            nome_indice_sql = nome_indice.replace('"', '""')
             cursor.execute(
-                "ALTER TABLE cliente_usuario "
-                "ADD COLUMN cliente_id INTEGER"
+                f'PRAGMA index_info("{nome_indice_sql}")'
+            )
+            colunas_indices_unicos[nome_indice] = tuple(
+                coluna[2] for coluna in cursor.fetchall()
+            )
+
+        if (
+            ("empresa",) in colunas_indices_unicos.values()
+            or ("email",) not in colunas_indices_unicos.values()
+            or colunas_indices_unicos.get(
+                "uq_cliente_usuario_usuario_sistema_id"
+            ) != ("usuario_sistema_id",)
+        ):
+            raise RuntimeError(
+                "Schema legado de cliente_usuario detectado. "
+                "Execute a migração estrutural controlada."
             )
 
         # ==========================
