@@ -2,6 +2,43 @@ import os
 from datetime import timedelta
 
 
+def _obter_booleano_ambiente(nome, padrao=False):
+    valor = os.environ.get(nome)
+
+    if valor is None or not valor.strip():
+        return padrao
+
+    valor_normalizado = valor.strip().lower()
+
+    if valor_normalizado in {"1", "true", "yes", "on"}:
+        return True
+
+    if valor_normalizado in {"0", "false", "no", "off"}:
+        return False
+
+    raise RuntimeError(
+        f"{nome} deve ser true/false, 1/0, yes/no ou on/off."
+    )
+
+
+APP_HOST = os.environ.get("APP_HOST", "127.0.0.1").strip()
+
+if not APP_HOST:
+    raise RuntimeError("APP_HOST não pode ser vazio.")
+
+_app_port_ambiente = os.environ.get("APP_PORT", "5000").strip()
+
+try:
+    APP_PORT = int(_app_port_ambiente)
+except ValueError as erro:
+    raise RuntimeError("APP_PORT deve ser um número inteiro.") from erro
+
+if not 1 <= APP_PORT <= 65535:
+    raise RuntimeError("APP_PORT deve estar entre 1 e 65535.")
+
+FLASK_DEBUG = _obter_booleano_ambiente("FLASK_DEBUG", False)
+
+
 JWT_SECRET_KEY = os.environ.get(
     "JWT_SECRET_KEY",
     ""

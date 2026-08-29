@@ -9,12 +9,15 @@ from config import (
     ADMIN_BOOTSTRAP_SENHA,
     ADMIN_BOOTSTRAP_USUARIO,
     ALLOWED_EXTENSIONS,
+    APP_HOST,
+    APP_PORT,
     CLIENTE_TESTE_EMAIL,
     CLIENTE_TESTE_SENHA,
     CORS_ALLOW_HEADERS,
     CORS_METHODS,
     CORS_RESOURCES,
     DB_PATH as db_path,
+    FLASK_DEBUG,
     JWT_ACCESS_TOKEN_EXPIRES,
     JWT_SECRET_KEY,
     SQLALCHEMY_DATABASE_URI,
@@ -214,4 +217,8 @@ with app.app_context():
     
     
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(
+        host=APP_HOST,
+        port=APP_PORT,
+        debug=FLASK_DEBUG
+    )
