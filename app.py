@@ -16,18 +16,22 @@ from config import (
     CORS_ALLOW_HEADERS,
     CORS_METHODS,
     CORS_RESOURCES,
-    DB_PATH as db_path,
     FLASK_DEBUG,
     JWT_ACCESS_TOKEN_EXPIRES,
     JWT_SECRET_KEY,
     SQLALCHEMY_DATABASE_URI,
     SQLALCHEMY_TRACK_MODIFICATIONS,
+    USAR_COMPATIBILIDADE_SCHEMA_SQLITE,
     UPLOAD_FOLDER as upload_folder
 )
 from extensions import cors, db, jwt
 from utils.senhas import gerar_hash_senha
 
-app = Flask(__name__)
+app = Flask(
+    __name__,
+    static_folder=upload_folder,
+    static_url_path="/static/uploads"
+)
 
 app.config["JWT_SECRET_KEY"] = JWT_SECRET_KEY
 app.config["JWT_ACCESS_TOKEN_EXPIRES"] = JWT_ACCESS_TOKEN_EXPIRES
@@ -36,7 +40,12 @@ app.config["ALLOWED_EXTENSIONS"] = ALLOWED_EXTENSIONS
 app.config["SQLALCHEMY_DATABASE_URI"] = SQLALCHEMY_DATABASE_URI
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = SQLALCHEMY_TRACK_MODIFICATIONS
 
-os.makedirs(upload_folder, exist_ok=True)
+try:
+    os.makedirs(upload_folder, exist_ok=True)
+except OSError as erro:
+    raise RuntimeError(
+        "Não foi possível criar ou acessar UPLOAD_FOLDER."
+    ) from erro
 
 db.init_app(app)
 jwt.init_app(app)
@@ -115,8 +124,9 @@ app.register_blueprint(admin_viagens_bp)
 with app.app_context():
     db.create_all()
 
-    adicionar_colunas_operacionais()
-    adicionar_colunas_auditoria()
+    if USAR_COMPATIBILIDADE_SCHEMA_SQLITE:
+        adicionar_colunas_operacionais()
+        adicionar_colunas_auditoria()
 
     admin_padrao = UsuarioSistema.query.filter_by(
         perfil="administrador",

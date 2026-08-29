@@ -1,6 +1,8 @@
 import os
 from datetime import timedelta
 
+from sqlalchemy.engine import make_url
+
 
 def _obter_booleano_ambiente(nome, padrao=False):
     valor = os.environ.get(nome)
@@ -122,9 +124,40 @@ CLIENTE_TESTE_EMAIL = os.environ.get(
 CLIENTE_TESTE_SENHA = os.environ.get("CLIENTE_TESTE_SENHA", "123456")
 
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
-DB_PATH = os.path.join(BASE_DIR, "database.db")
-UPLOAD_FOLDER = os.path.join(BASE_DIR, "static", "uploads")
+DB_PATH_LOCAL = os.path.join(BASE_DIR, "database.db")
+_database_url_ambiente = os.environ.get("DATABASE_URL", "").strip()
+
+if _database_url_ambiente:
+    try:
+        _database_url_analisada = make_url(_database_url_ambiente)
+    except Exception as erro:
+        raise RuntimeError("DATABASE_URL inválida.") from erro
+
+    SQLALCHEMY_DATABASE_URI = _database_url_ambiente
+else:
+    _database_url_analisada = make_url("sqlite:///" + DB_PATH_LOCAL)
+    SQLALCHEMY_DATABASE_URI = "sqlite:///" + DB_PATH_LOCAL
+
+if (
+    _database_url_analisada.get_backend_name() == "sqlite"
+    and _database_url_analisada.database
+    and _database_url_analisada.database != ":memory:"
+):
+    DB_PATH = os.path.abspath(_database_url_analisada.database)
+    USAR_COMPATIBILIDADE_SCHEMA_SQLITE = True
+else:
+    DB_PATH = DB_PATH_LOCAL
+    USAR_COMPATIBILIDADE_SCHEMA_SQLITE = False
+
+_upload_folder_ambiente = os.environ.get("UPLOAD_FOLDER", "").strip()
+
+if _upload_folder_ambiente:
+    UPLOAD_FOLDER = os.path.abspath(
+        os.path.expanduser(_upload_folder_ambiente)
+    )
+else:
+    UPLOAD_FOLDER = os.path.join(BASE_DIR, "static", "uploads")
+
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "pdf"}
 
-SQLALCHEMY_DATABASE_URI = "sqlite:///" + DB_PATH
 SQLALCHEMY_TRACK_MODIFICATIONS = False

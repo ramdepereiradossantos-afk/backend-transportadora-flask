@@ -1,7 +1,7 @@
 from datetime import datetime
 import os
 
-from flask import Blueprint, current_app, jsonify, request
+from flask import Blueprint, current_app, jsonify, request, url_for
 from flask_jwt_extended import get_jwt_identity, jwt_required
 from werkzeug.utils import secure_filename
 
@@ -522,6 +522,9 @@ def api_upload_arquivo_comprovante(id):
 
     nome_seguro = secure_filename(arquivo.filename)
 
+    if not nome_seguro:
+        return {"erro": "Arquivo inválido."}, 400
+
     nome_final = f"{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{nome_seguro}"
 
     caminho = os.path.join(
@@ -583,7 +586,11 @@ def api_listar_arquivos_comprovante(id):
             "id": arquivo.id,
             "nome_arquivo": arquivo.nome_arquivo,
             "data_upload": formatar_data_brasilia(arquivo.data_upload),
-            "url": f"http://127.0.0.1:5000/static/uploads/{arquivo.nome_arquivo}"
+            "url": url_for(
+                "static",
+                filename=arquivo.nome_arquivo,
+                _external=True
+            )
         })
 
     return lista

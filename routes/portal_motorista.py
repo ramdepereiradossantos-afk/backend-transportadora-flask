@@ -1,7 +1,7 @@
 from datetime import datetime
 import os
 
-from flask import Blueprint, current_app, jsonify, request
+from flask import Blueprint, current_app, jsonify, request, url_for
 from flask_jwt_extended import get_jwt_identity, jwt_required
 from werkzeug.utils import secure_filename
 
@@ -555,9 +555,10 @@ def api_listar_arquivos_comprovante_motorista(id):
                 if arquivo.data_upload
                 else ""
             ),
-            "url": (
-                "http://127.0.0.1:5000/"
-                f"static/uploads/{arquivo.nome_arquivo}"
+            "url": url_for(
+                "static",
+                filename=arquivo.nome_arquivo,
+                _external=True
             )
         })
 
