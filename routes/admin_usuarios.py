@@ -6,6 +6,7 @@ from models.clientes import Cliente, ClienteUsuario
 from models.recursos import Motorista
 from models.usuarios import UsuarioSistema
 from services.auditoria import registrar_log
+from utils.senhas import gerar_hash_senha, senha_esta_em_hash
 
 
 admin_usuarios_bp = Blueprint(
@@ -294,11 +295,13 @@ def api_admin_usuarios():
                 }), 409
 
     try:
+        senha_hash = gerar_hash_senha(senha)
+
         novo_usuario = UsuarioSistema(
             nome=nome,
             email=email,
             usuario=nome_usuario,
-            senha=senha,
+            senha=senha_hash,
             perfil=perfil,
             ativo=True
         )
@@ -313,7 +316,7 @@ def api_admin_usuarios():
                 nome=nome,
                 empresa=cliente_comercial.razao_social,
                 email=email,
-                senha=senha,
+                senha=senha_hash,
                 ativo=novo_usuario.ativo
             )
 
@@ -338,7 +341,7 @@ def api_admin_usuarios():
                 nome=nome,
                 email=email,
                 usuario=nome_usuario,
-                senha=senha,
+                senha=senha_hash,
                 status="Ativo"
             )
 
@@ -584,10 +587,15 @@ def api_editar_usuario(id):
         usuario.ativo = bool(ativo)
 
         if redefinir_senha:
-            usuario.senha = nova_senha
+            usuario.senha = gerar_hash_senha(nova_senha)
 
         if perfil == "cliente":
             if not cliente_usuario:
+                if not senha_esta_em_hash(usuario.senha):
+                    usuario.senha = gerar_hash_senha(
+                        usuario.senha
+                    )
+
                 cliente_usuario = ClienteUsuario(
                     usuario_sistema_id=usuario.id,
                     cliente_id=cliente_comercial.id,
@@ -606,8 +614,16 @@ def api_editar_usuario(id):
                 cliente_usuario.email = email
                 cliente_usuario.ativo = usuario.ativo
 
-                if redefinir_senha:
-                    cliente_usuario.senha = usuario.senha
+        if redefinir_senha:
+            if cliente_usuario:
+                cliente_usuario.senha = usuario.senha
+
+            motorista_usuario = Motorista.query.filter_by(
+                usuario_sistema_id=usuario.id
+            ).first()
+
+            if motorista_usuario:
+                motorista_usuario.senha = usuario.senha
 
         dados_depois = {
             "nome": usuario.nome,

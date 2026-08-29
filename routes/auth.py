@@ -6,8 +6,15 @@ from flask_jwt_extended import (
 )
 
 from extensions import db
+from models.clientes import ClienteUsuario
+from models.recursos import Motorista
 from models.usuarios import UsuarioSistema
 from services.auditoria import registrar_log
+from utils.senhas import (
+    gerar_hash_senha,
+    senha_esta_em_hash,
+    verificar_senha,
+)
 
 
 auth_bp = Blueprint("auth", __name__)
@@ -32,14 +39,52 @@ def api_login():
 
     usuario = UsuarioSistema.query.filter_by(
         usuario=usuario_digitado,
-        senha=senha_digitada,
         ativo=True
     ).first()
 
-    if not usuario:
+    if not usuario or not verificar_senha(
+        usuario.senha,
+        senha_digitada,
+    ):
         return {
             "erro": "Usuário ou senha inválidos."
         }, 401
+
+    if not senha_esta_em_hash(usuario.senha):
+        senha_legada = usuario.senha
+        senha_hash = gerar_hash_senha(senha_digitada)
+
+        usuario.senha = senha_hash
+
+        cliente_usuario = ClienteUsuario.query.filter_by(
+            usuario_sistema_id=usuario.id
+        ).first()
+
+        if (
+            cliente_usuario
+            and not senha_esta_em_hash(cliente_usuario.senha)
+            and verificar_senha(
+                cliente_usuario.senha,
+                senha_legada,
+            )
+        ):
+            cliente_usuario.senha = senha_hash
+
+        motorista = Motorista.query.filter_by(
+            usuario_sistema_id=usuario.id
+        ).first()
+
+        if (
+            motorista
+            and not senha_esta_em_hash(motorista.senha)
+            and verificar_senha(
+                motorista.senha,
+                senha_legada,
+            )
+        ):
+            motorista.senha = senha_hash
+
+        db.session.commit()
 
     access_token = create_access_token(
         identity=str(usuario.id),
@@ -99,7 +144,7 @@ def api_alterar_senha(id):
             "erro": "Informe a senha atual e a nova senha."
         }, 400
 
-    if usuario.senha != senha_atual:
+    if not verificar_senha(usuario.senha, senha_atual):
         return {
             "erro": "Senha atual incorreta."
         }, 400
@@ -109,12 +154,29 @@ def api_alterar_senha(id):
             "erro": "A nova senha deve ter pelo menos 6 caracteres."
         }, 400
 
-    if nova_senha == usuario.senha:
+    if verificar_senha(usuario.senha, nova_senha):
         return {
             "erro": "A nova senha deve ser diferente da senha atual."
         }, 400
 
-    usuario.senha = nova_senha
+    nova_senha_hash = gerar_hash_senha(nova_senha)
+
+    usuario.senha = nova_senha_hash
+
+    cliente_usuario = ClienteUsuario.query.filter_by(
+        usuario_sistema_id=usuario.id
+    ).first()
+
+    if cliente_usuario:
+        cliente_usuario.senha = nova_senha_hash
+
+    motorista = Motorista.query.filter_by(
+        usuario_sistema_id=usuario.id
+    ).first()
+
+    if motorista:
+        motorista.senha = nova_senha_hash
+
     db.session.commit()
 
     return {

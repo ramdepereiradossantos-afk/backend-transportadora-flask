@@ -20,6 +20,7 @@ from config import (
     USUARIO_ADMIN
 )
 from extensions import cors, db, jwt
+from utils.senhas import gerar_hash_senha
 
 app = Flask(__name__)
 
@@ -120,7 +121,7 @@ with app.app_context():
         admin_padrao = UsuarioSistema(
             nome="Administrador",
             usuario="admin",
-            senha="ramos123",
+            senha=gerar_hash_senha("ramos123"),
             perfil="administrador",
             ativo=True
         )

@@ -5,6 +5,7 @@ from extensions import db
 from models.operacao import Rastreamento, Viagem
 from models.recursos import Motorista
 from models.usuarios import UsuarioSistema
+from utils.senhas import gerar_hash_senha
 
 
 admin_motoristas_bp = Blueprint(
@@ -116,6 +117,8 @@ def api_criar_motorista():
     if perfil_usuario == "operador":
         status_inicial = "Ativo"
 
+    senha_hash = gerar_hash_senha(senha)
+
     motorista = Motorista(
         nome=nome,
         cpf=str(dados.get("cpf", "")).strip(),
@@ -129,7 +132,7 @@ def api_criar_motorista():
         telefone=str(dados.get("telefone", "")).strip(),
         email=email,
         usuario=usuario,
-        senha=senha,
+        senha=senha_hash,
         status=status_inicial,
         disponibilidade="Disponível",
         observacoes=str(
@@ -141,7 +144,7 @@ def api_criar_motorista():
         nome=nome,
         usuario=usuario,
         email=email,
-        senha=senha,
+        senha=senha_hash,
         perfil="motorista",
         ativo=True
     )
