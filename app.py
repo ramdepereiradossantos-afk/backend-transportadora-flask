@@ -4,6 +4,10 @@ from datetime import datetime
 import os
 import json
 from config import (
+    ADMIN_BOOTSTRAP_EMAIL,
+    ADMIN_BOOTSTRAP_NOME,
+    ADMIN_BOOTSTRAP_SENHA,
+    ADMIN_BOOTSTRAP_USUARIO,
     ALLOWED_EXTENSIONS,
     CLIENTE_TESTE_EMAIL,
     CLIENTE_TESTE_SENHA,
@@ -13,11 +17,9 @@ from config import (
     DB_PATH as db_path,
     JWT_ACCESS_TOKEN_EXPIRES,
     JWT_SECRET_KEY,
-    SENHA_ADMIN,
     SQLALCHEMY_DATABASE_URI,
     SQLALCHEMY_TRACK_MODIFICATIONS,
-    UPLOAD_FOLDER as upload_folder,
-    USUARIO_ADMIN
+    UPLOAD_FOLDER as upload_folder
 )
 from extensions import cors, db, jwt
 from utils.senhas import gerar_hash_senha
@@ -114,14 +116,54 @@ with app.app_context():
     adicionar_colunas_auditoria()
 
     admin_padrao = UsuarioSistema.query.filter_by(
-        usuario="admin"
+        perfil="administrador",
+        ativo=True
     ).first()
 
     if not admin_padrao:
+        configuracao_admin = {
+            "ADMIN_BOOTSTRAP_NOME": ADMIN_BOOTSTRAP_NOME,
+            "ADMIN_BOOTSTRAP_USUARIO": ADMIN_BOOTSTRAP_USUARIO,
+            "ADMIN_BOOTSTRAP_EMAIL": ADMIN_BOOTSTRAP_EMAIL,
+            "ADMIN_BOOTSTRAP_SENHA": ADMIN_BOOTSTRAP_SENHA,
+        }
+        variaveis_ausentes = [
+            nome
+            for nome, valor in configuracao_admin.items()
+            if not valor
+        ]
+
+        if variaveis_ausentes:
+            raise RuntimeError(
+                "Banco sem administrador ativo. Configure as "
+                "variáveis ADMIN_BOOTSTRAP_* para criar o "
+                "administrador inicial."
+            )
+
+        if len(ADMIN_BOOTSTRAP_SENHA) < 6:
+            raise RuntimeError(
+                "ADMIN_BOOTSTRAP_SENHA deve possuir pelo menos "
+                "6 caracteres."
+            )
+
+        usuario_bootstrap_existente = (
+            UsuarioSistema.query.filter_by(
+                usuario=ADMIN_BOOTSTRAP_USUARIO
+            ).first()
+        )
+
+        if usuario_bootstrap_existente:
+            raise RuntimeError(
+                "ADMIN_BOOTSTRAP_USUARIO já está em uso."
+            )
+
         admin_padrao = UsuarioSistema(
-            nome="Administrador",
-            usuario="admin",
-            senha=gerar_hash_senha("ramos123"),
+            nome=ADMIN_BOOTSTRAP_NOME,
+            usuario=ADMIN_BOOTSTRAP_USUARIO,
+            email=ADMIN_BOOTSTRAP_EMAIL,
+            senha=gerar_hash_senha(
+                ADMIN_BOOTSTRAP_SENHA
+            ),
             perfil="administrador",
             ativo=True
         )

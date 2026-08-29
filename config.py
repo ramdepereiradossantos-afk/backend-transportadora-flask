@@ -4,8 +4,19 @@ from datetime import timedelta
 
 JWT_SECRET_KEY = os.environ.get(
     "JWT_SECRET_KEY",
-    "troque-esta-chave-em-producao"
-)
+    ""
+).strip()
+
+if not JWT_SECRET_KEY:
+    raise RuntimeError(
+        "JWT_SECRET_KEY não configurada."
+    )
+
+if len(JWT_SECRET_KEY) < 32:
+    raise RuntimeError(
+        "JWT_SECRET_KEY deve possuir pelo menos 32 caracteres."
+    )
+
 JWT_ACCESS_TOKEN_EXPIRES = timedelta(hours=8)
 
 CORS_RESOURCES = {
@@ -31,8 +42,22 @@ CORS_METHODS = [
     "OPTIONS"
 ]
 
-USUARIO_ADMIN = os.environ.get("USUARIO_ADMIN", "admin")
-SENHA_ADMIN = os.environ.get("SENHA_ADMIN", "ramos123")
+ADMIN_BOOTSTRAP_NOME = os.environ.get(
+    "ADMIN_BOOTSTRAP_NOME",
+    ""
+).strip()
+ADMIN_BOOTSTRAP_USUARIO = os.environ.get(
+    "ADMIN_BOOTSTRAP_USUARIO",
+    ""
+).strip()
+ADMIN_BOOTSTRAP_EMAIL = os.environ.get(
+    "ADMIN_BOOTSTRAP_EMAIL",
+    ""
+).strip()
+ADMIN_BOOTSTRAP_SENHA = os.environ.get(
+    "ADMIN_BOOTSTRAP_SENHA",
+    ""
+).strip()
 
 CLIENTE_TESTE_EMAIL = os.environ.get(
     "CLIENTE_TESTE_EMAIL",
