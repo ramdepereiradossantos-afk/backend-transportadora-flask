@@ -4,6 +4,7 @@ from flask import Blueprint, jsonify, request
 from flask_jwt_extended import get_jwt_identity, jwt_required
 
 from extensions import db
+from models.clientes import Cliente
 from models.cotacoes import Carga, Cotacao
 from models.operacao import Rastreamento
 from models.usuarios import UsuarioSistema
@@ -50,10 +51,40 @@ def aprovar_cotacao(id):
             "erro": "Esta cotação já foi aprovada."
         }), 400
 
+    dados = request.get_json(silent=True) or {}
+    cliente_id = dados.get("cliente_id")
+
+    if cliente_id is None:
+        return jsonify({
+            "erro": "Informe o cliente comercial."
+        }), 400
+
+    if isinstance(cliente_id, bool) or not isinstance(cliente_id, int):
+        return jsonify({
+            "erro": "cliente_id deve ser um número inteiro."
+        }), 400
+
+    cliente_selecionado = db.session.get(Cliente, cliente_id)
+
+    if not cliente_selecionado:
+        return jsonify({
+            "erro": "Cliente não encontrado."
+        }), 404
+
+    if not cliente_selecionado.ativo:
+        return jsonify({
+            "erro": "Não é possível aprovar para um cliente inativo."
+        }), 409
+
+    cliente_textual = (
+        cliente_selecionado.nome_fantasia
+        or cliente_selecionado.razao_social
+    )
+
     try:
         carga = Carga(
             cotacao_id=cotacao.id,
-            cliente=cotacao.cliente,
+            cliente=cliente_textual,
             whatsapp=cotacao.whatsapp,
             origem=cotacao.origem,
             destino=cotacao.destino,
@@ -66,7 +97,8 @@ def aprovar_cotacao(id):
 
         rastreamento = Rastreamento(
             codigo="TEMPORARIO",
-            cliente=cotacao.cliente,
+            cliente=cliente_textual,
+            cliente_id=cliente_selecionado.id,
             status="Pendente",
             local_atual=cotacao.origem,
             destino=cotacao.destino,
