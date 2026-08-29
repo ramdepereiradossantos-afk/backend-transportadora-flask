@@ -19,14 +19,33 @@ if len(JWT_SECRET_KEY) < 32:
 
 JWT_ACCESS_TOKEN_EXPIRES = timedelta(hours=8)
 
+CORS_ORIGINS_LOCAIS = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:5174",
+    "http://127.0.0.1:5174"
+]
+
+_cors_origins_ambiente = os.environ.get("CORS_ORIGINS")
+
+if _cors_origins_ambiente is None:
+    CORS_ORIGINS = CORS_ORIGINS_LOCAIS
+else:
+    CORS_ORIGINS = list(dict.fromkeys(
+        origem.strip()
+        for origem in _cors_origins_ambiente.split(",")
+        if origem.strip()
+    ))
+
+    if not CORS_ORIGINS:
+        raise RuntimeError("CORS_ORIGINS não contém origem válida.")
+
+    if "*" in CORS_ORIGINS:
+        raise RuntimeError("CORS_ORIGINS não permite wildcard.")
+
 CORS_RESOURCES = {
     r"/api/*": {
-        "origins": [
-            "http://localhost:5173",
-            "http://127.0.0.1:5173",
-            "http://localhost:5174",
-            "http://127.0.0.1:5174"
-        ]
+        "origins": CORS_ORIGINS
     }
 }
 CORS_ALLOW_HEADERS = [
