@@ -29,7 +29,7 @@ class ClienteUsuario(db.Model):
     nome = db.Column(db.String(100), nullable=False)
     empresa = db.Column(db.String(100), nullable=False)
     email = db.Column(db.String(120), nullable=False, unique=True)
-    senha = db.Column(db.String(120), nullable=False)
+    senha = db.Column(db.String(255), nullable=False)
     ativo = db.Column(db.Boolean, default=True)
     data_criacao = db.Column(db.DateTime, default=datetime.utcnow)
 

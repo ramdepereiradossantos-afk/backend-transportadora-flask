@@ -13,7 +13,7 @@ class Motorista(db.Model):
     telefone = db.Column(db.String(30), nullable=True)
     email = db.Column(db.String(120), nullable=True)
     usuario = db.Column(db.String(80), nullable=True, unique=True)
-    senha = db.Column(db.String(120), nullable=True)
+    senha = db.Column(db.String(255), nullable=True)
     usuario_sistema_id = db.Column(
         db.Integer,
         db.ForeignKey("usuario_sistema.id"),
