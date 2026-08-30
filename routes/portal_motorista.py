@@ -22,6 +22,7 @@ from services.recursos import (
     recalcular_status_veiculo,
     veiculo_possui_status_especial,
 )
+from utils.arquivos import extensao_arquivo_permitida
 from utils.datas import formatar_data_brasilia
 
 
@@ -418,6 +419,14 @@ def api_upload_arquivo_comprovante_motorista(id):
     if not arquivo:
         return jsonify({
             "erro": "Nenhum arquivo enviado."
+        }), 400
+
+    if not extensao_arquivo_permitida(
+        arquivo.filename,
+        current_app.config["ALLOWED_EXTENSIONS"],
+    ):
+        return jsonify({
+            "erro": "Tipo de arquivo não permitido."
         }), 400
 
     nome_seguro = secure_filename(
