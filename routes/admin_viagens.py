@@ -1,7 +1,7 @@
 from datetime import datetime
 import os
 
-from flask import Blueprint, current_app, jsonify, request, url_for
+from flask import Blueprint, current_app, jsonify, request
 from flask_jwt_extended import get_jwt_identity, jwt_required
 from werkzeug.utils import secure_filename
 
@@ -593,10 +593,8 @@ def api_listar_arquivos_comprovante(id):
             "id": arquivo.id,
             "nome_arquivo": arquivo.nome_arquivo,
             "data_upload": formatar_data_brasilia(arquivo.data_upload),
-            "url": url_for(
-                "static",
-                filename=arquivo.nome_arquivo,
-                _external=True
+            "download_endpoint": (
+                f"/api/comprovantes/arquivos/{arquivo.id}/download"
             )
         })
 

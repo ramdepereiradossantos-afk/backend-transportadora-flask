@@ -29,8 +29,7 @@ from utils.senhas import gerar_hash_senha
 
 app = Flask(
     __name__,
-    static_folder=upload_folder,
-    static_url_path="/static/uploads"
+    static_folder=None
 )
 
 app.config["JWT_SECRET_KEY"] = JWT_SECRET_KEY
@@ -106,6 +105,7 @@ from routes.portal_cliente import portal_cliente_bp
 from routes.portal_motorista import portal_motorista_bp
 from routes.admin_cargas import admin_cargas_bp
 from routes.admin_viagens import admin_viagens_bp
+from routes.comprovantes import comprovantes_bp
 
 app.register_blueprint(public_bp)
 app.register_blueprint(auth_bp)
@@ -120,6 +120,7 @@ app.register_blueprint(portal_cliente_bp)
 app.register_blueprint(portal_motorista_bp)
 app.register_blueprint(admin_cargas_bp)
 app.register_blueprint(admin_viagens_bp)
+app.register_blueprint(comprovantes_bp)
 
 with app.app_context():
     db.create_all()

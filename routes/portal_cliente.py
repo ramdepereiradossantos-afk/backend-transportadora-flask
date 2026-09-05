@@ -1,13 +1,14 @@
-from flask import Blueprint, jsonify, request, url_for
+from flask import Blueprint, jsonify, request
 from flask_jwt_extended import get_jwt_identity, jwt_required
 
 from extensions import db
-from models.clientes import Cliente, ClienteUsuario
+from models.clientes import Cliente
 from models.comprovantes import ArquivoComprovanteViagem, ComprovanteEntrega
 from models.historicos import HistoricoRastreamento
 from models.ocorrencias import OcorrenciaEntrega
 from models.operacao import Rastreamento, Viagem
 from models.usuarios import UsuarioSistema
+from services.autorizacao_comprovantes import obter_cliente_usuario
 from utils.datas import formatar_data_brasilia
 
 
@@ -15,22 +16,6 @@ portal_cliente_bp = Blueprint(
     "portal_cliente",
     __name__
 )
-
-
-def _obter_cliente_usuario(usuario_sistema):
-    cliente_usuario = ClienteUsuario.query.filter_by(
-        usuario_sistema_id=usuario_sistema.id,
-        ativo=True
-    ).first()
-
-    if cliente_usuario:
-        return cliente_usuario
-
-    return ClienteUsuario.query.filter_by(
-        email=usuario_sistema.email,
-        ativo=True,
-        usuario_sistema_id=None
-    ).first()
 
 
 @portal_cliente_bp.route(
@@ -56,7 +41,7 @@ def api_cliente_minhas_cargas():
             "erro": "Acesso permitido somente para clientes."
         }), 403
 
-    cliente_usuario = _obter_cliente_usuario(usuario_sistema)
+    cliente_usuario = obter_cliente_usuario(usuario_sistema)
 
     if not cliente_usuario:
         return jsonify({
@@ -140,7 +125,7 @@ def api_detalhe_carga_cliente_logado(carga_id):
             "erro": "Acesso permitido somente para clientes."
         }, 403
 
-    cliente_usuario = _obter_cliente_usuario(usuario_sistema)
+    cliente_usuario = obter_cliente_usuario(usuario_sistema)
 
     if not cliente_usuario:
         return {
@@ -220,7 +205,7 @@ def api_listar_ocorrencias_cliente(carga_id):
             "erro": "Acesso permitido somente para clientes."
         }, 403
 
-    cliente_usuario = _obter_cliente_usuario(usuario_sistema)
+    cliente_usuario = obter_cliente_usuario(usuario_sistema)
 
     if not cliente_usuario:
         return {
@@ -289,7 +274,7 @@ def api_criar_ocorrencia_cliente(carga_id):
             "erro": "Acesso permitido somente para clientes."
         }, 403
 
-    cliente_usuario = _obter_cliente_usuario(usuario_sistema)
+    cliente_usuario = obter_cliente_usuario(usuario_sistema)
 
     if not cliente_usuario:
         return {
@@ -369,7 +354,7 @@ def api_comprovantes_carga_cliente(carga_id):
             "erro": "Acesso permitido somente para clientes."
         }, 403
 
-    cliente_usuario = _obter_cliente_usuario(usuario_sistema)
+    cliente_usuario = obter_cliente_usuario(usuario_sistema)
 
     if not cliente_usuario:
         return {
@@ -438,10 +423,8 @@ def api_comprovantes_carga_cliente(carga_id):
                 "data_upload": formatar_data_brasilia(
                     arquivo.data_upload
                 ),
-                "url": url_for(
-                    "static",
-                    filename=arquivo.nome_arquivo,
-                    _external=True
+                "download_endpoint": (
+                    f"/api/comprovantes/arquivos/{arquivo.id}/download"
                 )
             }
             for arquivo in arquivos
@@ -472,7 +455,7 @@ def api_perfil_cliente():
             "erro": "Acesso permitido somente para clientes."
         }), 403
 
-    cliente_usuario = _obter_cliente_usuario(usuario_sistema)
+    cliente_usuario = obter_cliente_usuario(usuario_sistema)
 
     if not cliente_usuario:
         return jsonify({
